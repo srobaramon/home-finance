@@ -531,3 +531,11 @@
 "Transport & disposal": "Doprava a odvoz"
 "Furniture & appliances": "Nábytok a spotrebiče"
 "Other project costs": "Ostatné náklady projektu"
+
+# --- receipt scanning
+"Scan receipt": "Naskenovať bloček"
+"From photos": "Z fotiek"
+"Read on this phone — the photo is not uploaded anywhere.": "Prečíta sa v tomto telefóne — fotka sa nikam neodosiela."
+"Couldn't find the total — please enter it.": "Nenašla sa celková suma — zadajte ju, prosím."
+"Filled in from the receipt — please check.": "Vyplnené z bločku — skontrolujte, prosím."
+"Couldn't read the receipt.": "Bloček sa nepodarilo prečítať."
