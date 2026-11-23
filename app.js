@@ -88,6 +88,21 @@ function recRow(r) {
       ${due <= 14 ? `<button class="btn small" data-act="payRec" data-id="${r.id}">${tr(r.type === 'income' ? 'Received' : 'Paid')}</button>` : ''}</span></div>`;
 }
 
+// ---------- currency display ----------
+function rateText(i) { return tr('1 %@ = %@ %@ · ECB %@', i.base, new Intl.NumberFormat(LOCALE(), { maximumFractionDigits: 4 }).format(i.rate.rate), i.code, fmtDate(i.rate.date)); }
+function rateBanner() {
+  const i = viewInfo();
+  if (i.missing) return `<div class="banner">⚠️ <span>${esc(tr("Couldn't get today's rate — showing %@.", i.code))}</span></div>`;
+  if (!i.rate) return '';
+  return `<div class="banner" data-act="tab" data-id="more">💱 <span>${esc(tr('Amounts shown in %@', i.code))} · ${esc(rateText(i))}</span></div>`;
+}
+function rateLine() {
+  const i = viewInfo();
+  if (i.missing) return `<p class="hint">⚠️ ${esc(tr("Couldn't get today's rate — showing %@.", i.code))} <button type="button" class="link" data-act="refreshRate">${tr('Refresh rate')}</button></p>`;
+  if (!i.rate) return `<p class="hint">${tr('Amounts are recorded in the workspace currency. Pick another currency to see everything converted at today\'s rate.')}</p>`;
+  return `<p class="hint">💱 ${esc(rateText(i))} · <button type="button" class="link" data-act="refreshRate">${tr('Refresh rate')}</button><br>${esc(tr('Enter amounts in %@', i.base))}</p>`;
+}
+
 // ---------- views ----------
 const V = {};
 
@@ -127,7 +142,9 @@ function newSpacePicker() {
     <button class="card choice" data-act="newKind" data-id="personal"><span class="big-ic">👤</span><span><b>${tr('Personal finance')}</b><small>${tr('Household spending, accounts, house & car, budgets, savings and trips.')}</small></span></button>
     <button class="card choice" data-act="newKind" data-id="business"><span class="big-ic">🏢</span><span><b>${tr('Company')}</b><small>${tr('Small business: revenue, costs, team & wages, equipment, loans — e.g. a car repair shop.')}</small></span></button>`;
   const biz = ui.newKind === 'business';
-  return `<div class="card" style="text-align:left"><label class="field"><span>${tr(biz ? 'Company name' : 'Name')}</span><input id="spaceName" value="${biz ? '' : esc(tr('Personal'))}" placeholder="${esc(tr(biz ? 'e.g. Auto Servis s.r.o.' : 'Personal'))}"></label></div>
+  const defCur = LANG === 'cs' ? 'CZK' : 'EUR';
+  return `<div class="card" style="text-align:left"><label class="field"><span>${tr(biz ? 'Company name' : 'Name')}</span><input id="spaceName" value="${biz ? '' : esc(tr('Personal'))}" placeholder="${esc(tr(biz ? 'e.g. Auto Servis s.r.o.' : 'Personal'))}"></label>
+    <label class="field"><span>${tr('Workspace currency')}</span><select id="spaceCur">${CURRENCY_LIST.map(c => opt(c, c, defCur)).join('')}</select></label></div>
     <button class="btn" data-act="createSpace" data-id="0">${tr('Start with my own data')}</button>
     <button class="btn ghost" data-act="createSpace" data-id="1">${tr('Explore with demo data')}</button>
     <button class="link" style="margin-top:14px" data-act="newKind" data-id="">${tr('Back')}</button>`;
@@ -145,6 +162,7 @@ V.home = () => {
   const backupOld = S.mode === 'device' && d.txn.length > 20 && daysBetween(S.lastBackup || S.created || today(), today()) > 14;
   return `
   <header class="top"><div><button class="space-btn" data-act="spaces">${space().kind === 'business' ? '🏢' : '👤'} ${esc(space().name)} ▾</button><h1>${tr('Overview')}</h1></div></header>
+  ${rateBanner()}
   ${backupOld ? `<div class="banner" data-act="exportJSON">💾 <span>${tr('Your data lives only on this device.')} <b>${tr('Back up all data')}</b></span></div>` : ''}
   <section class="card hero">
     <small>${tr(biz ? 'Company value (cash + assets − debts)' : 'Net worth')}</small>
@@ -265,7 +283,9 @@ V.more = () => {
   <p class="hint" style="margin:8px 4px 0">${tr('Download a CSV statement from your internet banking and import it here. Duplicates are skipped and categories are learned from your earlier transactions.')}</p>
   <div class="section-title">${tr('Settings')}</div>
   <section class="card">
-    <label class="field"><span>${tr('Currency')}</span><select data-input="currency">${CURRENCIES.map(c => `<option${c === currency() ? ' selected' : ''}>${c}</option>`).join('')}</select></label>
+    <label class="field"><span>${tr('Workspace currency')}</span><select data-input="baseCur">${CURRENCY_LIST.map(c => opt(c, c, baseCur())).join('')}</select></label>
+    <label class="field"><span>${tr('Show amounts in')}</span><select data-input="viewCur"><option value="">${tr('Same as workspace')} (${baseCur()})</option>${CURRENCY_LIST.filter(c => c !== baseCur()).map(c => opt(c, c, viewPref())).join('')}</select></label>
+    ${rateLine()}
     <label class="field"><span>${tr('Language')}</span><select data-input="lang">${[['system', tr('Phone language')], ['en', 'English'], ['sk', 'Slovenčina'], ['cs', 'Čeština']].map(([v, l]) => `<option value="${v}"${langSetting() === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
   </section>
   <div class="section-title">${tr('Account')}</div>
@@ -337,7 +357,8 @@ function txForm(id, preset = {}) {
   const trips = d.goal.filter(g => g.kind === 'trip');
   openSheet(tr(id ? 'Edit transaction' : 'New transaction'), `
     <div class="seg">${['expense', 'income', 'transfer'].map(k => `<label><input type="radio" name="type" value="${k}"${t.type === k ? ' checked' : ''}><span>${tr(k[0].toUpperCase() + k.slice(1))}</span></label>`).join('')}</div>
-    <input class="amount" name="amount" inputmode="decimal" placeholder="${esc(money(0))}" value="${t.amount ?? ''}">
+    <input class="amount" name="amount" inputmode="decimal" placeholder="0 ${baseCur()}" value="${t.amount ?? ''}">
+    ${viewInfo().rate ? `<p class="hint" style="text-align:center;margin-top:-8px">${esc(tr('Enter amounts in %@', baseCur()))}</p>` : ''}
     <div class="grid2">${field(tr('Account'), accSelect('accountId', t.accountId))}${field(tr('Date'), dateInput('date', t.date))}</div>
     <div class="only-transfer">${field(tr('To account'), accSelect('toAccountId', t.toAccountId || d.account.find(a => a.id !== t.accountId)?.id))}</div>
     <div class="cats not-transfer">${d.category.map(c => `<label class="cat" data-type="${c.type}"><input type="radio" name="categoryId" value="${c.id}"${t.categoryId === c.id ? ' checked' : ''}><span style="--c:${c.colorHex}"><i>${c.icon}</i>${esc(c.name)}</span></label>`).join('')}</div>
@@ -567,6 +588,19 @@ function payWages() {
   closeSheet(); render();
 }
 
+// ---------- currency change ----------
+async function baseCurrencySheet(to) {
+  const from = baseCur();
+  if (to === from) return;
+  let rateInfo = '';
+  try { const r = await fetchRate(from, to); rateInfo = tr('Today\'s rate: 1 %@ = %@ %@ (European Central Bank, %@).', from, new Intl.NumberFormat(LOCALE(), { maximumFractionDigits: 4 }).format(r.rate), to, fmtDate(r.date)); }
+  catch { rateInfo = tr("Couldn't get today's rate — showing %@.", from); }
+  openSheet(tr('Change workspace currency'), `
+    <p style="margin:0 4px 14px"><b>${from} → ${to}</b><br><span class="muted">${esc(rateInfo)}</span></p>
+    <button type="button" class="btn" data-act="convertBase" data-id="${to}">${tr("Convert all amounts at today's rate")}</button>
+    <button type="button" class="btn ghost" data-act="relabelBase" data-id="${to}">${tr('Keep numbers, only change the currency')}</button>`);
+}
+
 // ---------- workspaces ----------
 function spacesSheet() {
   const list = Object.values(S.spaces).sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
@@ -707,7 +741,7 @@ const A = {
   createSpace: async demo => {
     const biz = ui.newKind === 'business', n = ($('#spaceName')?.value || '').trim();
     const name = n || (biz ? tr(demo === '1' ? 'Auto Servis (demo)' : 'My company') : tr('Personal'));
-    await createSpace(name, ui.newKind, demo === '1');
+    await createSpace(name, ui.newKind, demo === '1', $('#spaceCur')?.value || 'EUR');
     ui.newKind = ''; closeSheet(); tab = 'home'; render();
   },
   migrateV1: async () => { if (await migrateV1()) { toast(tr('Done')); render(); } },
@@ -748,6 +782,9 @@ const A = {
     remove(id); render(); categoriesSheet();
   },
   syncNow: () => syncNow(),
+  refreshRate: async () => { try { await refreshViewRate(true); toast(rateText(viewInfo())); } catch { toast(tr("Couldn't get today's rate — showing %@.", baseCur())); } render(); },
+  convertBase: async to => { try { await changeBaseCurrency(to, true); toast(tr('Done')); } catch { toast(tr("Couldn't get today's rate — showing %@.", baseCur())); } closeSheet(); render(); },
+  relabelBase: async to => { await changeBaseCurrency(to, false); closeSheet(); render(); },
   signOut,
   importCSV: () => $('#fileCSV').click(),
   importJSON: () => $('#fileJSON').click(),
@@ -755,7 +792,7 @@ const A = {
   exportCSV: () => {
     const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const lines = ['Date,Type,Amount,Currency,Account,To account,Category,Note'];
-    db().txn.forEach(t => lines.push([t._day, t.type, (t.type === 'expense' ? -t.amount : t.amount).toFixed(2), currency(), q(byId(t.accountId)?.name), q(byId(t.toAccountId)?.name), q(t.categoryId ? catOf(t.categoryId).name : ''), q(t.note)].join(',')));
+    db().txn.forEach(t => lines.push([t._day, t.type, (t.type === 'expense' ? -t.amount : t.amount).toFixed(2), baseCur(), q(byId(t.accountId)?.name), q(byId(t.toAccountId)?.name), q(t.categoryId ? catOf(t.categoryId).name : ''), q(t.note)].join(',')));
     download(`transactions-${today()}.csv`, lines.join('\n'), 'text/csv');
   },
 };
@@ -772,7 +809,13 @@ document.addEventListener('input', e => {
 document.addEventListener('change', e => {
   const k = e.target.dataset?.input;
   if (k === 'acct') { ui.acct = e.target.value; $('#txlist').innerHTML = txList(); }
-  if (k === 'currency') { localStorage.setItem('hf.currency', e.target.value); render(); }
+  if (k === 'viewCur') {
+    const v = e.target.value;
+    if (v) localStorage.setItem('hf.view', v); else localStorage.removeItem('hf.view');
+    if (v) refreshViewRate(true).then(() => { const i = viewInfo(); toast(rateText(i)); render(); }).catch(() => { toast(tr("Couldn't get today's rate — showing %@.", baseCur())); render(); });
+    else render();
+  }
+  if (k === 'baseCur') { const to = e.target.value; e.target.value = baseCur(); baseCurrencySheet(to); }
   if (k === 'lang') { localStorage.setItem('hf.lang', e.target.value); render(); }
 });
 $('#fileCSV').addEventListener('change', async e => {
@@ -812,6 +855,7 @@ $('#fileJSON').addEventListener('change', async e => {
   }
   if (autoPostRecurring()) save();
   render();
+  refreshViewRate(false).then(changed => { if (changed) renderQuiet(); });
   if (session) syncNow();
   setInterval(() => { if (!document.hidden) syncNow(); }, 60000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { autoPostRecurring(); syncNow(); render(); } });

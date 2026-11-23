@@ -391,3 +391,18 @@
 "never": "nikdy"
 "Data is stored only on this device. Sign in to back it up and use it on other devices — what's here gets uploaded to your account.": "Data jsou uložena jen v tomto zařízení. Přihlaste se, abyste je zálohovali a měli i na jiných zařízeních — vše, co je tu, se nahraje do vašeho účtu."
 "Synced to your private account (stored in the EU). Signing out removes the data from this device; it comes back when you sign in.": "Synchronizováno s vaším soukromým účtem (uloženo v EU). Odhlášením se data z tohoto zařízení odstraní; po přihlášení se vrátí."
+
+# --- currencies
+"Workspace currency": "Měna prostoru"
+"Show amounts in": "Zobrazit částky v"
+"Same as workspace": "Stejně jako prostor"
+"1 %@ = %@ %@ · ECB %@": "1 %@ = %@ %@ · ECB %@"
+"Couldn't get today's rate — showing %@.": "Nepodařilo se načíst dnešní kurz — zobrazuji %@."
+"Amounts shown in %@": "Částky zobrazené v %@"
+"Enter amounts in %@": "Částky zadávejte v %@"
+"Refresh rate": "Obnovit kurz"
+"Amounts are recorded in the workspace currency. Pick another currency to see everything converted at today's rate.": "Částky se zapisují v měně prostoru. Vyberte jinou měnu a vše se přepočítá dnešním kurzem."
+"Change workspace currency": "Změnit měnu prostoru"
+"Convert all amounts at today's rate": "Přepočítat všechny částky dnešním kurzem"
+"Keep numbers, only change the currency": "Ponechat čísla, změnit jen měnu"
+"Today's rate: 1 %@ = %@ %@ (European Central Bank, %@).": "Dnešní kurz: 1 %@ = %@ %@ (Evropská centrální banka, %@)."

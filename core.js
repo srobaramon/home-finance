@@ -70,15 +70,70 @@ function tr(key, ...args) {
 }
 const LOCALE = () => ({ sk: 'sk-SK', cs: 'cs-CZ' }[LANG] || 'en-GB');
 
+// ---------- currencies & exchange rates ----------
+// Amounts are stored in the workspace currency. "Show amounts in" converts them for display only,
+// using the European Central Bank rate fetched (free, no API key) from frankfurter.dev when you switch.
+const CURRENCY_LIST = ['EUR', 'CZK', 'USD', 'GBP', 'CHF', 'PLN', 'HUF', 'SEK', 'NOK', 'DKK'];
+const RATE_API = 'https://api.frankfurter.dev/v1/latest';
+const baseCur = () => S.spaces?.[S.current]?.currency || 'EUR';
+const viewPref = () => localStorage.getItem('hf.view') || '';
+let RATES = null;   // parsed once; money() is called hundreds of times per screen
+function rates() { if (!RATES) { try { RATES = JSON.parse(localStorage.getItem('hf.rates')) || {}; } catch { RATES = {}; } } return RATES; }
+/** What money() shows right now: currency code + factor from the workspace currency. */
+function viewInfo() {
+  const base = baseCur(), v = viewPref();
+  if (!v || v === base) return { code: base, factor: 1 };
+  const r = rates()[`${base}>${v}`];
+  return r ? { code: v, factor: r.rate, base, rate: r } : { code: base, factor: 1, missing: v };
+}
+async function fetchRate(from, to) {
+  const res = await fetch(`${RATE_API}?base=${from}&symbols=${to}`);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const j = await res.json(), rate = j.rates?.[to];
+  if (!rate) throw new Error('no rate');
+  const all = rates(); all[`${from}>${to}`] = { rate, date: j.date, fetched: Date.now() };
+  localStorage.setItem('hf.rates', JSON.stringify(all)); RATES = all;
+  return { rate, date: j.date };
+}
+/** Refreshes the display rate if older than 12 h (force: always). Offline keeps the last rate. */
+async function refreshViewRate(force) {
+  const base = baseCur(), v = viewPref();
+  if (!v || v === base) return false;
+  const r = rates()[`${base}>${v}`];
+  if (!force && r && Date.now() - r.fetched < 12 * 3600e3) return false;
+  try { await fetchRate(base, v); return true; } catch (e) { if (force) throw e; return false; }
+}
+const MONEY_FIELDS = { account: ['opening'], txn: ['amount'], asset: ['value', 'purchasePrice'], debt: ['balance', 'monthly'], budget: ['limit'], goal: ['target', 'saved'], recurring: ['amount'], snapshot: ['value'], employee: ['grossMonthly'] };
+/** Multiplies every amount in the current workspace by `factor` (permanent conversion). */
+function convertSpace(factor) {
+  const r2 = x => Math.round(x * factor * 100) / 100;
+  for (const kind of Object.keys(MONEY_FIELDS)) {
+    for (const o of [...db()[kind]]) {
+      const c = { ...o };
+      for (const f of MONEY_FIELDS[kind]) if (c[f] != null) c[f] = kind === 'snapshot' ? Math.round(c[f] * factor) : r2(c[f]);
+      if (kind === 'asset' && c.history) c.history = c.history.map(h => ({ date: h.date, value: r2(h.value) }));
+      put(kind, c);
+    }
+  }
+}
+async function changeBaseCurrency(to, convert) {
+  const from = baseCur();
+  if (from === to) return;
+  if (convert) convertSpace((await fetchRate(from, to)).rate);
+  S.spaces[S.current].currency = to;
+  if (!S.dirtySpaces.includes(S.current)) S.dirtySpaces.push(S.current);
+  if (viewPref() === to) localStorage.removeItem('hf.view');
+  CACHE = null; save(); scheduleSync();
+}
+
 // ---------- formatting ----------
-const currency = () => localStorage.getItem('hf.currency') || 'EUR';
 const fmtCache = {};
 function money(n, short) {
-  const k = LOCALE() + currency() + (short ? 0 : 2);
+  const { code, factor } = viewInfo(), d = short ? 0 : 2, k = LOCALE() + code + d;
   try {
-    fmtCache[k] ??= new Intl.NumberFormat(LOCALE(), { style: 'currency', currency: currency(), minimumFractionDigits: short ? 0 : 2, maximumFractionDigits: short ? 0 : 2 });
-    return fmtCache[k].format(n);
-  } catch { return n.toFixed(short ? 0 : 2) + ' ' + currency(); }
+    fmtCache[k] ??= new Intl.NumberFormat(LOCALE(), { style: 'currency', currency: code, minimumFractionDigits: d, maximumFractionDigits: d });
+    return fmtCache[k].format(n * factor);
+  } catch { return (n * factor).toFixed(d) + ' ' + code; }
 }
 const signed = (n, type) => (type === 'expense' ? '−' : type === 'income' ? '+' : '') + money(Math.abs(n));
 const fmtNum = (n, d = 1) => new Intl.NumberFormat(LOCALE(), { maximumFractionDigits: d }).format(n);
@@ -109,7 +164,6 @@ const ACCOUNT_TYPES = { bank: ['Bank account', '🏦'], cash: ['Cash', '💵'], 
 const ASSET_TYPES = { property: ['Property', '🏠'], vehicle: ['Vehicle', '🚗'], investment: ['Investments', '📈'], valuables: ['Valuables', '💎'], business: ['Business', '🏢'], other: ['Other', '📦'] };
 const DEBT_TYPES = { mortgage: ['Mortgage', '🏠'], car: ['Car loan', '🚗'], loan: ['Personal loan', '💸'], card: ['Credit card debt', '💳'], other: ['Other debt', '📄'] };
 const FREQ = { weekly: ['Weekly', 52 / 12], monthly: ['Monthly', 1], quarterly: ['Every 3 months', 1 / 3], yearly: ['Yearly', 1 / 12] };
-const CURRENCIES = ['EUR', 'CZK', 'USD', 'GBP', 'CHF', 'PLN', 'HUF'];
 const KINDS = ['account', 'category', 'txn', 'asset', 'debt', 'budget', 'goal', 'recurring', 'snapshot', 'employee'];
 const REF_FIELDS = ['accountId', 'toAccountId', 'categoryId', 'goalId', 'recurringId', 'assetId'];
 
@@ -276,9 +330,9 @@ function seedCategories(kind, spaceId = S.current) {
   (kind === 'business' ? BUSINESS_CATS : PERSONAL_CATS).forEach(([name, icon, type], i) =>
     put('category', { name: tr(name), icon, type, colorHex: PALETTE[i % PALETTE.length], sort: i }, spaceId));
 }
-async function createSpace(name, kind, demo) {
+async function createSpace(name, kind, demo, currency = 'EUR') {
   const id = uuid();
-  S.spaces[id] = { id, name, kind, created_at: nowIso() };
+  S.spaces[id] = { id, name, kind, currency, created_at: nowIso() };
   S.dirtySpaces.push(id);
   S.current = id; CACHE = null;
   S.created ||= today();
@@ -431,7 +485,7 @@ async function syncNow() {
     // 1. workspaces
     const pushSpaces = S.dirtySpaces.filter(id => S.spaces[id]);
     if (pushSpaces.length) {
-      const { error } = await sb.from('workspaces').upsert(pushSpaces.map(id => ({ id, name: S.spaces[id].name, kind: S.spaces[id].kind })));
+      const { error } = await sb.from('workspaces').upsert(pushSpaces.map(id => ({ id, name: S.spaces[id].name, kind: S.spaces[id].kind, currency: S.spaces[id].currency || 'EUR' })));
       if (error) throw error;
     }
     S.dirtySpaces = S.dirtySpaces.filter(id => !pushSpaces.includes(id));
@@ -440,13 +494,13 @@ async function syncNow() {
       if (error) throw error;
       S.deletedSpaces = S.deletedSpaces.filter(x => x !== id);
     }
-    const { data: ws, error: e1 } = await sb.from('workspaces').select('id,name,kind,created_at');
+    const { data: ws, error: e1 } = await sb.from('workspaces').select('id,name,kind,currency,created_at');
     if (e1) throw e1;
     const remote = new Set(ws.map(w => w.id));
     for (const w of ws) {
       const local = S.spaces[w.id];
       if (local && S.dirtySpaces.includes(w.id)) continue;
-      S.spaces[w.id] = { id: w.id, name: w.name, kind: w.kind, created_at: local?.created_at || w.created_at };
+      S.spaces[w.id] = { id: w.id, name: w.name, kind: w.kind, currency: w.currency || 'EUR', created_at: local?.created_at || w.created_at };
     }
     for (const id of Object.keys(S.spaces)) if (!remote.has(id) && !S.dirtySpaces.includes(id)) {
       for (const r of Object.values(S.records)) if (r.space === id) delete S.records[r.id];
