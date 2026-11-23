@@ -30,6 +30,8 @@ This file is identical in both repos — **when you change it, change both**.
 8. Features must land in **both apps** (web + iOS) unless the PR says why not; data format must stay identical.
 
 ## Safety rules
+- **Security first.** No secret (LLM/bank/service keys) ever goes into the web or iOS app — they are public. Paid APIs run only
+  through Supabase Edge Functions with sign-in, quotas and a kill switch (see `docs/SECURITY.md`).
 - Never commit `Config/Secrets.xcconfig`, service_role/secret keys, DB passwords or personal data.
   The publishable (anon) key in the apps is public by design; data is protected by Row Level Security.
 - Test accounts in Supabase only with the owner's explicit OK for that session; always delete them (and their data) after the test.
