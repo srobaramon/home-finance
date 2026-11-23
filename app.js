@@ -52,7 +52,7 @@ function txRow(t) {
   return `<button class="item" data-act="editTx" data-id="${t.id}">
     <span class="ic" style="--c:${c.colorHex}">${c.icon}</span>
     <span class="mid"><b>${esc(t.note || c.name)}</b><small>${esc(sub)}</small></span>
-    <span class="end"><b class="${t.type === 'income' ? 'pos' : ''}">${signed(t.amount, t.type)}</b></span></button>`;
+    <span class="end"><b class="${t.type === 'income' ? 'pos' : ''}">${(t.type === 'expense' ? '−' : t.type === 'income' ? '+' : '') + moneyIn(t.amount, accCur(acc))}</b>${t.origCurrency ? `<small>${esc(moneyIn(t.origAmount, t.origCurrency))}</small>` : t.type === 'transfer' && t.toAmount != null ? `<small>→ ${esc(moneyIn(t.toAmount, accCur(to)))}</small>` : ''}</span></button>`;
 }
 function budgetRow(b) {
   const c = catOf(b.categoryId), mk = monthKey(today()), s = spent(b.categoryId, mk), pct = b.limit ? s / b.limit : 0, left = b.limit - s;
@@ -183,7 +183,7 @@ V.home = () => {
     ${nw}
   </section>
   <div class="acc-strip">
-    ${d.account.filter(a => !a.archived).map(a => { const b = balance(a); return `<button class="acc-chip" data-act="editAccount" data-id="${a.id}"><small>${ACCOUNT_TYPES[a.type]?.[1] || '👛'} ${esc(a.name)}</small><b class="${b < 0 ? 'neg' : ''}">${money(b)}</b></button>`; }).join('')}
+    ${d.account.filter(a => !a.archived).map(a => { const b = balance(a); return `<button class="acc-chip" data-act="editAccount" data-id="${a.id}"><small>${ACCOUNT_TYPES[a.type]?.[1] || '👛'} ${esc(a.name)}</small><b class="${b < 0 ? 'neg' : ''}">${moneyIn(b, accCur(a))}</b></button>`; }).join('')}
     <button class="acc-chip" data-act="newAccount"><small>${tr('Add account')}</small><b class="link">${tr('＋ New')}</b></button>
   </div>
   <section class="card">
@@ -206,10 +206,10 @@ function txList() {
   if (q) list = list.filter(t => [t.note, catOf(t.categoryId).name, byId(t.accountId)?.name, t.amount.toFixed(2)].join(' ').toLowerCase().includes(q));
   if (!list.length) return `<div class="empty"><div class="e">🔍</div>${tr(q ? 'No results' : 'No transactions')}</div>`;
   const days = {}; list.forEach(t => (days[t._day] ||= []).push(t));
-  const inc = sum(list.filter(t => t.type === 'income'), t => t.amount), exp = sum(list.filter(t => t.type === 'expense'), t => t.amount);
+  const inc = sum(list.filter(t => t.type === 'income'), baseOf), exp = sum(list.filter(t => t.type === 'expense'), baseOf);
   return `<div class="split3" style="margin:6px 0 4px">${stat(tr('Income'), money(inc, 1), 'pos')}${stat(tr('Expenses'), money(exp, 1), 'neg')}${stat(tr('Net'), money(inc - exp, 1))}</div>` +
     Object.entries(days).map(([d, ts]) => {
-      const net = sum(ts, t => (t.type === 'income' ? t.amount : t.type === 'expense' ? -t.amount : 0));
+      const net = sum(ts, t => (t.type === 'income' ? baseOf(t) : t.type === 'expense' ? -baseOf(t) : 0));
       return `<div class="day-h"><span>${fmtDate(d, { weekday: 'short', day: 'numeric', month: 'short', year: d.slice(0, 4) !== today().slice(0, 4) ? 'numeric' : undefined })}</span><span>${net ? money(net) : ''}</span></div><div class="card flush">${ts.map(txRow).join('')}</div>`;
     }).join('');
 }
@@ -287,7 +287,7 @@ V.more = () => {
   ${biz ? `<div class="section-title">${tr('Company')}</div><section class="card flush"><button class="item" data-act="team"><span class="ic" style="--c:#f97316">👷</span><span class="mid"><b>${tr('Team & wages')}</b></span><span class="end"><b>${esc(tr('%@/mo', money(sum(team, totalCost), 1)))}</b></span></button></section>` : ''}
   <div class="section-title">${tr('Accounts')}</div>
   <section class="card flush">
-    ${d.account.map(a => { const b = balance(a); return `<button class="item" data-act="editAccount" data-id="${a.id}"><span class="ic" style="--c:#3b82f6">${ACCOUNT_TYPES[a.type]?.[1] || '👛'}</span><span class="mid"><b class="${a.archived ? 'muted' : ''}">${esc(a.name)}</b><small>${tr(ACCOUNT_TYPES[a.type]?.[0] || 'Other')}</small></span><span class="end"><b class="${b < 0 ? 'neg' : ''}">${money(b)}</b></span></button>`; }).join('')}
+    ${d.account.map(a => { const b = balance(a); return `<button class="item" data-act="editAccount" data-id="${a.id}"><span class="ic" style="--c:#3b82f6">${ACCOUNT_TYPES[a.type]?.[1] || '👛'}</span><span class="mid"><b class="${a.archived ? 'muted' : ''}">${esc(a.name)}</b><small>${tr(ACCOUNT_TYPES[a.type]?.[0] || 'Other')}</small></span><span class="end"><b class="${b < 0 ? 'neg' : ''}">${moneyIn(b, accCur(a))}</b></span></button>`; }).join('')}
     <button class="item" data-act="newAccount"><span class="ic" style="--c:#2f6bff">＋</span><span class="mid"><b class="link">${tr('Add account')}</b></span></button>
   </section>
   <section class="card flush" style="margin-top:14px"><button class="item" data-act="categories"><span class="ic" style="--c:#a855f7">🏷️</span><span class="mid"><b>${tr('Categories')}</b></span><span class="end muted">›</span></button></section>
@@ -375,11 +375,13 @@ function txForm(id, preset = {}) {
   const trips = d.goal.filter(g => g.kind === 'trip');
   openSheet(tr(id ? 'Edit transaction' : 'New transaction'), `
     <div class="seg">${['expense', 'income', 'transfer'].map(k => `<label><input type="radio" name="type" value="${k}"${t.type === k ? ' checked' : ''}><span>${tr(k[0].toUpperCase() + k.slice(1))}</span></label>`).join('')}</div>
-    <input class="amount" name="amount" inputmode="decimal" placeholder="0 ${baseCur()}" value="${t.amount ?? ''}">
-    ${viewInfo().rate ? `<p class="hint" style="text-align:center;margin-top:-8px">${esc(tr('Enter amounts in %@', baseCur()))}</p>` : ''}
+    <div class="amount-row"><input class="amount" name="amount" inputmode="decimal" placeholder="0" value="${t.origAmount ?? t.amount ?? ''}">
+      <select name="currency" aria-label="${esc(tr('Currency'))}">${[...new Set([t.origCurrency || accCur(byId(t.accountId)), ...CURRENCY_LIST])].map(c => opt(c, c, t.origCurrency || accCur(byId(t.accountId)))).join('')}</select></div>
     <div class="grid2">${field(tr('Account'), accSelect('accountId', t.accountId))}${field(tr('Date'), dateInput('date', t.date))}</div>
-    <div class="only-transfer">${field(tr('To account'), accSelect('toAccountId', t.toAccountId || d.account.find(a => a.id !== t.accountId)?.id))}</div>
-    <div class="cats not-transfer">${d.category.map(c => `<label class="cat" data-type="${c.type}"><input type="radio" name="categoryId" value="${c.id}"${t.categoryId === c.id ? ' checked' : ''}><span style="--c:${c.colorHex}"><i>${c.icon}</i>${esc(c.name)}</span></label>`).join('')}</div>
+    <div class="fx" id="fxCharged" hidden>${field(`<span id="fxChargedLabel"></span>`, moneyInput('charged', t.origCurrency ? t.amount : ''))}<p class="hint" id="fxChargedHint"></p></div>
+    <div class="only-transfer">${field(tr('To account'), accSelect('toAccountId', t.toAccountId || d.account.find(a => a.id !== t.accountId)?.id))}
+      <div class="fx" id="fxReceived" hidden>${field(`<span id="fxReceivedLabel"></span>`, moneyInput('received', t.toAmount ?? ''))}<p class="hint" id="fxReceivedHint"></p></div></div>
+    <div class="cats not-transfer">${d.category.map(c => `<label class="cat" data-type="${c.type}" data-scope="${c.scope || 'all'}"><input type="radio" name="categoryId" value="${c.id}"${t.categoryId === c.id ? ' checked' : ''}><span style="--c:${c.colorHex}"><i>${c.icon}</i>${esc(c.name)}</span></label>`).join('')}</div>
     ${field(tr('Note (e.g. Lidl, dinner)'), `<input name="note" value="${esc(t.note || '')}">`)}
     ${trips.length ? `<div class="only-expense">${field(tr('Part of trip / event'), `<select name="goalId">${opt('', '—', t.goalId)}${trips.map(g => opt(g.id, `${g.icon} ${g.name}`, t.goalId)).join('')}</select>`)}</div>` : ''}
     ${d.project.length ? `<div class="only-expense grid2">${field(tr('Project'), `<select name="projectId">${opt('', '—', t.projectId)}${d.project.map(p => opt(p.id, `${p.icon} ${p.name}`, t.projectId)).join('')}</select>`)}${field(tr('Budget line'), `<select name="projectLineId"></select>`)}</div>` : ''}
@@ -387,21 +389,67 @@ function txForm(id, preset = {}) {
     onMount: f => {
       const sync = () => {
         const type = f.elements.namedItem('type').value; f.dataset.type = type;
+        // project payment → project categories; everyday payment → everyday categories
+        f.dataset.scope = type === 'expense' && f.elements.namedItem('projectId')?.value ? 'project' : 'all';
+        const chosen = f.querySelector('input[name=categoryId]:checked');
+        if (chosen && chosen.closest('.cat').dataset.scope !== f.dataset.scope && chosen.closest('.cat').dataset.type === 'expense') chosen.checked = false;
         const sel = f.querySelector('input[name=categoryId]:checked');
         if (sel && sel.closest('.cat').dataset.type !== type) sel.checked = false;
       };
       const lines = () => { const sel = f.elements.namedItem('projectLineId'); if (!sel) return; const pid = f.elements.namedItem('projectId').value;
         sel.innerHTML = opt('', '—', t.projectLineId) + (pid ? db().projectLine.filter(l => l.projectId === pid).map(l => opt(l.id, l.name, t.projectLineId)).join('') : ''); sel.disabled = !pid; };
-      f.addEventListener('change', e => { if (e.target.name === 'type') sync(); if (e.target.name === 'projectId') lines(); }); sync(); lines();
+      // multi-currency: paid currency vs account currency, transfer target currency
+      let prevAcc = f.accountId.value, chargedEdited = !!t.origCurrency, receivedEdited = t.toAmount != null, seq = 0;
+      f.charged.addEventListener('input', () => { chargedEdited = true; });
+      f.received.addEventListener('input', () => { receivedEdited = true; });
+      const fx = async () => {
+        const my = ++seq, paid = Math.abs(num(f.amount.value)), P = f.currency.value, A = accCur(byId(f.accountId.value)), day = f.date.value || today();
+        const showC = P !== A; $('#fxCharged').hidden = !showC;
+        if (showC) {
+          $('#fxChargedLabel').textContent = tr('Charged to account (%@)', A);
+          try { const r = await fetchRate(P, A, day); if (my !== seq) return;
+            $('#fxChargedHint').textContent = tr('1 %@ = %@ %@ · ECB %@', P, fmtNum(r.rate, 4), A, fmtDate(r.date));
+            if (!chargedEdited && paid) f.charged.value = (Math.round(paid * r.rate * 100) / 100).toFixed(2);
+          } catch { $('#fxChargedHint').textContent = tr("Couldn't get today's rate — showing %@.", A); }
+        }
+        const B = accCur(byId(f.toAccountId.value)), showR = f.elements.namedItem('type').value === 'transfer' && B !== A;
+        $('#fxReceived').hidden = !showR;
+        if (showR) {
+          $('#fxReceivedLabel').textContent = tr('Received (%@)', B);
+          const sent = P === A ? paid : num(f.charged.value);
+          try { const r = await fetchRate(A, B, day); if (my !== seq) return;
+            $('#fxReceivedHint').textContent = tr('1 %@ = %@ %@ · ECB %@', A, fmtNum(r.rate, 4), B, fmtDate(r.date));
+            if (!receivedEdited && sent) f.received.value = (Math.round(sent * r.rate * 100) / 100).toFixed(2);
+          } catch { $('#fxReceivedHint').textContent = tr("Couldn't get today's rate — showing %@.", B); }
+        }
+      };
+      f.addEventListener('change', e => {
+        if (e.target.name === 'type') sync(); if (e.target.name === 'projectId') { lines(); sync(); }
+        if (e.target.name === 'accountId') { if (f.currency.value === accCur(byId(prevAcc))) f.currency.value = accCur(byId(f.accountId.value)); prevAcc = f.accountId.value; }
+        if (['currency', 'accountId', 'toAccountId', 'date', 'type'].includes(e.target.name)) { chargedEdited = chargedEdited && e.target.name !== 'currency'; fx(); }
+      });
+      f.amount.addEventListener('input', () => fx());
+      sync(); lines(); fx();
       if (!id) setTimeout(() => f.amount.focus(), 300);
     },
-    onSubmit: v => {
-      const amount = Math.abs(num(v.amount));
-      if (!amount) { toast(tr('Enter an amount')); return false; }
+    onSubmit: async v => {
+      const paid = Math.abs(num(v.amount));
+      if (!paid) { toast(tr('Enter an amount')); return false; }
       if (v.type === 'transfer' && v.toAccountId === v.accountId) { toast(tr('Pick two different accounts')); return false; }
-      let categoryId = v.type === 'transfer' ? undefined : v.categoryId || guessCategory(v.note, v.type) || catNamed(v.type === 'income' ? 'Other income' : 'Other')?.id || catNamed(v.type === 'income' ? 'Other revenue' : 'Other costs')?.id;
+      const day = v.date || today(), P = v.currency, A = accCur(byId(v.accountId)), W = baseCur();
+      let amount = paid, fxFields;
+      try {
+        if (P !== A) amount = Math.abs(num(v.charged)) || Math.round(paid * (await fetchRate(P, A, day)).rate * 100) / 100;
+        let baseAmount;
+        if (A !== W) baseAmount = Math.round(amount * (await fetchRate(A, W, day)).rate * 100) / 100;
+        let toAmount;
+        const B = accCur(byId(v.toAccountId));
+        if (v.type === 'transfer' && B !== A) toAmount = Math.abs(num(v.received)) || Math.round(amount * (await fetchRate(A, B, day)).rate * 100) / 100;
+        fxFields = { baseAmount, toAmount, origAmount: P !== A ? paid : undefined, origCurrency: P !== A ? P : undefined };
+      } catch { toast(tr("Couldn't get today's rate — showing %@.", A)); return false; }
+      let categoryId = v.type === 'transfer' ? undefined : v.categoryId || guessCategory(v.note, v.type) || (v.type === 'expense' && v.projectId ? catNamed('Other project costs')?.id : undefined) || catNamed(v.type === 'income' ? 'Other income' : 'Other')?.id || catNamed(v.type === 'income' ? 'Other revenue' : 'Other costs')?.id;
       const keepTime = id && dayOf(t.date) === v.date;
-      put('txn', { ...t, id: id || undefined, type: v.type, amount, accountId: v.accountId, date: keepTime ? t.date : day2iso(v.date || today()), note: (v.note || '').trim(), categoryId,
+      put('txn', { ...t, ...fxFields, id: id || undefined, type: v.type, amount, accountId: v.accountId, date: keepTime ? t.date : day2iso(v.date || today()), note: (v.note || '').trim(), categoryId,
         toAccountId: v.type === 'transfer' ? v.toAccountId : undefined, goalId: v.type === 'expense' ? v.goalId || undefined : undefined,
         projectId: v.type === 'expense' ? v.projectId || undefined : undefined, projectLineId: v.type === 'expense' && v.projectId ? v.projectLineId || undefined : undefined });
       localStorage.setItem('hf.lastAccount', v.accountId);
@@ -415,15 +463,17 @@ function accountForm(id) {
   const bal = id ? balance(a) : 0;
   openSheet(id ? a.name : tr('New account'), `
     ${field(tr('Name (e.g. Main account)'), `<input name="name" value="${esc(a.name || '')}">`)}
-    ${field(tr('Type'), typeSelect('type', ACCOUNT_TYPES, a.type))}
-    ${field(tr(id ? 'Current balance' : 'Balance today'), moneyInput('balance', id ? bal.toFixed(2) : ''))}
+    <div class="grid2">${field(tr('Type'), typeSelect('type', ACCOUNT_TYPES, a.type))}${field(tr('Currency'), `<select name="currency">${CURRENCY_LIST.map(c => opt(c, c, accCur(a))).join('')}</select>`)}</div>
+    ${field(tr(id ? 'Current balance' : 'Balance today') + ` <span id="balCur">(${accCur(a)})</span>`, moneyInput('balance', id ? bal.toFixed(2) : ''))}
+    ${id && db().txn.some(t => t.accountId === id || t.toAccountId === id) ? `<p class="hint">${tr('Changing the currency of an account with payments keeps the numbers — use it only to fix a wrong currency.')}</p>` : ''}
     <p class="hint">${tr('Credit card: enter what you owe as a negative number. Changing the balance later corrects it without adding a transaction.')}</p>
     ${id ? `<label class="field check"><input type="checkbox" name="archived"${a.archived ? ' checked' : ''}><span>${tr('Hide (closed account)')}</span></label>
       <button type="button" class="danger" data-act="delAccount" data-id="${id}">${tr('Delete account and its transactions')}</button>` : ''}`, {
     onSubmit: v => {
       if (!v.name?.trim()) { toast(tr('Name')); return false; }
       const target = num(v.balance);
-      put('account', { ...a, name: v.name.trim(), type: v.type, archived: !!v.archived, opening: id ? +a.opening + (target - bal) : target });
+      setTimeout(() => refreshAccountRates().then(c => c && renderQuiet()), 400);
+      put('account', { ...a, name: v.name.trim(), type: v.type, currency: v.currency, archived: !!v.archived, opening: id ? +a.opening + (target - bal) : target });
     },
   });
 }
@@ -477,7 +527,7 @@ function payDebtForm(id) {
     onSubmit: v => {
       const amt = num(v.amount); if (!amt) return false;
       put('debt', { ...l, balance: Math.max(0, l.balance - Math.max(0, amt - interest)) });
-      put('txn', { type: 'expense', amount: amt, accountId: v.accountId, categoryId: catNamed('Loan payments')?.id, date: day2iso(v.date || today()), note: tr('%@ payment', l.name) });
+      put('txn', bookInBase({ type: 'expense', accountId: v.accountId, categoryId: catNamed('Loan payments')?.id, date: day2iso(v.date || today()), note: tr('%@ payment', l.name) }, amt));
     },
   });
 }
@@ -485,7 +535,7 @@ function payDebtForm(id) {
 function budgetForm(id) {
   const b = id ? byId(id) : {}, d = db();
   const used = new Set(d.budget.filter(x => x.id !== id).map(x => x.categoryId));
-  const cats = d.category.filter(c => c.type === 'expense' && !used.has(c.id));
+  const cats = d.category.filter(c => c.type === 'expense' && c.scope !== 'project' && !used.has(c.id));
   if (!cats.length) return toast(tr('Category'));
   const avg = cid => sum([1, 2, 3], i => spent(cid, monthKey(addMonths(today().slice(0, 8) + '01', -i)))) / 3;
   openSheet(tr(id ? 'Edit budget' : 'New budget'), `
@@ -549,9 +599,10 @@ function recForm(id) {
 }
 
 function categoriesSheet() {
-  const grp = type => db().category.filter(c => c.type === type).map(c => `<button type="button" class="item" data-act="editCat" data-id="${c.id}"><span class="ic" style="--c:${c.colorHex}">${c.icon}</span><span class="mid"><b>${esc(c.name)}</b></span><span class="end muted">›</span></button>`).join('');
+  const grp = (type, scope) => db().category.filter(c => c.type === type && (scope ? c.scope === scope : c.scope !== 'project')).map(c => `<button type="button" class="item" data-act="editCat" data-id="${c.id}"><span class="ic" style="--c:${c.colorHex}">${c.icon}</span><span class="mid"><b>${esc(c.name)}</b></span><span class="end muted">›</span></button>`).join('');
   openSheet(tr('Categories'), `<div class="section-title" style="margin-top:0">${tr('Expenses')}</div><div class="card flush">${grp('expense')}</div>
-    <div class="section-title">${tr('Income')}</div><div class="card flush">${grp('income')}</div><button type="button" class="btn" data-act="newCat">${tr('New category')}</button>`);
+    <div class="section-title">${tr('Income')}</div><div class="card flush">${grp('income')}</div>
+    ${db().category.some(c => c.scope === 'project') ? `<div class="section-title">${tr('Projects')}</div><div class="card flush">${grp('expense', 'project')}</div>` : ''}<button type="button" class="btn" data-act="newCat">${tr('New category')}</button>`);
 }
 function catForm(id) {
   const c = id ? byId(id) : { type: 'expense', icon: '🏷️', colorHex: PALETTE[db().category.length % PALETTE.length], sort: db().category.length };
@@ -671,10 +722,10 @@ function payWages() {
   const wages = catNamed('Wages')?.id, levies = catNamed('Social & health insurance')?.id, other = (catNamed('Accounting & legal') || catNamed('Other costs'))?.id;
   let total = 0;
   for (const e of active) {
-    if (e.contractor) put('txn', { type: 'expense', amount: e.grossMonthly, accountId: acc?.id, categoryId: other, note: tr('%@ — invoice', e.name) });
+    if (e.contractor) put('txn', bookInBase({ type: 'expense', accountId: acc?.id, categoryId: other, note: tr('%@ — invoice', e.name) }, e.grossMonthly));
     else {
-      put('txn', { type: 'expense', amount: e.grossMonthly, accountId: acc?.id, categoryId: wages, note: tr('Wage — %@', e.name) });
-      put('txn', { type: 'expense', amount: Math.round(employerCost(e) * 100) / 100, accountId: acc?.id, categoryId: levies, note: tr('Levies — %@', e.name) });
+      put('txn', bookInBase({ type: 'expense', accountId: acc?.id, categoryId: wages, note: tr('Wage — %@', e.name) }, e.grossMonthly));
+      put('txn', bookInBase({ type: 'expense', accountId: acc?.id, categoryId: levies, note: tr('Levies — %@', e.name) }, Math.round(employerCost(e) * 100) / 100));
     }
     total += totalCost(e);
   }
@@ -744,8 +795,13 @@ function csvImportSheet(rows) {
     ${field(tr('Into account'), accSelect('accountId', localStorage.getItem('hf.lastAccount')))}
     <label class="field check"><input type="checkbox" name="flip"><span>${tr('Expenses are positive numbers')}</span></label>`, {
     submitLabel: tr('Import'),
-    onSubmit: v => {
-      const di = +v.date, ai = +v.amount, ti = +v.desc;
+    onSubmit: async v => {
+      const di = +v.date, ai = +v.amount, ti = +v.desc, A = accCur(byId(v.accountId)), W = baseCur();
+      let rateOn = () => 1;
+      if (A !== W) {
+        const days = rows.slice(1).map(r => parseDate(r[di])).filter(Boolean).sort();
+        try { rateOn = await fetchSeries(A, W, days[0], days[days.length - 1]); } catch { toast(tr("Couldn't get today's rate — showing %@.", A)); return false; }
+      }
       const seen = new Set(db().txn.filter(t => t.accountId === v.accountId).map(t => `${t._day}|${t.amount.toFixed(2)}|${(t.note || '').toLowerCase()}`));
       let added = 0, skipped = 0, bad = 0;
       for (const r of rows.slice(1)) {
@@ -756,7 +812,8 @@ function csvImportSheet(rows) {
         const k = `${day}|${amount.toFixed(2)}|${note.toLowerCase()}`;
         if (seen.has(k)) { skipped++; continue; }
         seen.add(k);
-        put('txn', { type, amount, accountId: v.accountId, date: day2iso(day), note, categoryId: guessCategory(note, type) || undefined, imported: true });
+        const r = A !== W ? rateOn(day) : null;
+        put('txn', { type, amount, baseAmount: r ? Math.round(amount * r * 100) / 100 : undefined, accountId: v.accountId, date: day2iso(day), note, categoryId: guessCategory(note, type) || undefined, imported: true });
         added++;
       }
       localStorage.setItem('hf.lastAccount', v.accountId);
@@ -896,8 +953,8 @@ const A = {
   exportJSON: () => { S.lastBackup = today(); save(); download(`home-finance-backup-${today()}.json`, JSON.stringify({ format: 'home-finance-2', spaces: S.spaces, records: Object.values(S.records).filter(r => !r.deleted) }, null, 1), 'application/json'); render(); },
   exportCSV: () => {
     const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const lines = ['Date,Type,Amount,Currency,Account,To account,Category,Note'];
-    db().txn.forEach(t => lines.push([t._day, t.type, (t.type === 'expense' ? -t.amount : t.amount).toFixed(2), baseCur(), q(byId(t.accountId)?.name), q(byId(t.toAccountId)?.name), q(t.categoryId ? catOf(t.categoryId).name : ''), q(t.note)].join(',')));
+    const lines = ['Date,Type,Amount,Currency,Amount in ' + baseCur() + ',Original amount,Original currency,Account,To account,Category,Note'];
+    db().txn.forEach(t => lines.push([t._day, t.type, (t.type === 'expense' ? -t.amount : t.amount).toFixed(2), accCur(byId(t.accountId)), (t.type === 'expense' ? -baseOf(t) : baseOf(t)).toFixed(2), t.origAmount ?? '', t.origCurrency ?? '', q(byId(t.accountId)?.name), q(byId(t.toAccountId)?.name), q(t.categoryId ? catOf(t.categoryId).name : ''), q(t.note)].join(',')));
     download(`transactions-${today()}.csv`, lines.join('\n'), 'text/csv');
   },
 };
@@ -961,6 +1018,7 @@ $('#fileJSON').addEventListener('change', async e => {
   if (autoPostRecurring()) save();
   render();
   refreshViewRate(false).then(changed => { if (changed) renderQuiet(); });
+  refreshAccountRates().then(changed => { if (changed) { CACHE = null; renderQuiet(); } });
   if (session) syncNow();
   setInterval(() => { if (!document.hidden) syncNow(); }, 60000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { autoPostRecurring(); syncNow(); render(); } });

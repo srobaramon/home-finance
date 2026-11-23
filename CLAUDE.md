@@ -46,6 +46,11 @@ This file is identical in both repos — **when you change it, change both**.
   Adding a field: optional on both sides, add to both, check that one app decodes the other's records.
   Dates are ISO-8601 with milliseconds (`2026-11-23T12:00:00.000Z`). IDs are UUIDs (web lowercases references).
 - **Sync**: local-first. Local edits are pushed (dirty set on web, JSON hashes on iOS); remote changes are pulled with `updated_at >= lastPull`. Deletes are soft (`deleted = true`). Sign-out wipes local data (cloud copy stays).
+- **Multi-currency** (contract fields, all optional): `account.currency` (absent = workspace currency);
+  `txn.amount` is in the account's currency, `txn.baseAmount` = value in the workspace currency at the payment-date ECB rate
+  (only when the account currency differs), `txn.origAmount` + `txn.origCurrency` = amount paid at the till in another currency,
+  `txn.toAmount` = amount received by a transfer's target account in its currency. Sums use the workspace value (`baseOf`).
+- **Category scope**: `category.scope = "project"` marks project categories (materials, labour…), shown only for project payments.
 - **Net-worth snapshot** id is derived from SHA-256("SPACEID-UPPERCASE|YYYY-MM") so both apps write the same record.
 - **Currencies**: amounts stored in the workspace currency; "Show amounts in" converts for display with ECB rates from `api.frankfurter.dev` (free, no key). Workspace currency change can convert all amounts.
 - **Translations**: `i18n/sk.yml`, `i18n/cs.yml` (web) == `HomeFinance/Localization/sk.yml`, `cs.yml` (iOS). **Identical files — copy both ways.**

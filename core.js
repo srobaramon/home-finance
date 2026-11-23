@@ -86,14 +86,43 @@ function viewInfo() {
   const r = rates()[`${base}>${v}`];
   return r ? { code: v, factor: r.rate, base, rate: r } : { code: base, factor: 1, missing: v };
 }
-async function fetchRate(from, to) {
-  const res = await fetch(`${RATE_API}?base=${from}&symbols=${to}`);
+/** ECB rate from → to. With `day` (YYYY-MM-DD) the rate valid on that day (last working day before it). Cached. */
+async function fetchRate(from, to, day) {
+  if (from === to) return { rate: 1, date: day || today() };
+  const key = day ? `${from}>${to}@${day}` : `${from}>${to}`;
+  if (day && rates()[key]) return rates()[key];                       // historical rates never change
+  const res = await fetch(`${RATE_API.replace('/latest', '/' + (day && day < today() ? day : 'latest'))}?base=${from}&symbols=${to}`);
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const j = await res.json(), rate = j.rates?.[to];
   if (!rate) throw new Error('no rate');
-  const all = rates(); all[`${from}>${to}`] = { rate, date: j.date, fetched: Date.now() };
+  const all = rates(); all[key] = { rate, date: j.date, fetched: Date.now() };
   localStorage.setItem('hf.rates', JSON.stringify(all)); RATES = all;
   return { rate, date: j.date };
+}
+/** Daily rates for a date range in one request (used by CSV import). Returns day → rate (weekends use the previous working day). */
+async function fetchSeries(from, to, startDay, endDay) {
+  if (from === to) return () => 1;
+  const res = await fetch(`${RATE_API.replace('/latest', `/${startDay}..${endDay}`)}?base=${from}&symbols=${to}`);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const j = await res.json(), days = Object.keys(j.rates || {}).sort();
+  return day => { let r = null; for (const d of days) { if (d <= day) r = j.rates[d][to]; else break; } return r ?? j.rates[days[0]]?.[to] ?? null; };
+}
+/** Latest cached rate (sync) — used for net worth and system-made payments. */
+function rateNow(from, to) {
+  if (from === to) return 1;
+  const r = rates()[`${from}>${to}`]; if (r) return r.rate;
+  const inv = rates()[`${to}>${from}`]; return inv ? 1 / inv.rate : null;
+}
+/** Keeps today's rates for every account currency fresh (net worth needs them). */
+async function refreshAccountRates() {
+  const W = baseCur(), need = [...new Set(db().account.map(a => a.currency).filter(c => c && c !== W))];
+  let changed = false;
+  for (const c of need) {
+    const r = rates()[`${c}>${W}`];
+    if (r && Date.now() - r.fetched < 12 * 3600e3) continue;
+    try { await fetchRate(c, W); changed = true; } catch {}
+  }
+  return changed;
 }
 /** Refreshes the display rate if older than 12 h (force: always). Offline keeps the last rate. */
 async function refreshViewRate(force) {
@@ -103,10 +132,22 @@ async function refreshViewRate(force) {
   if (!force && r && Date.now() - r.fetched < 12 * 3600e3) return false;
   try { await fetchRate(base, v); return true; } catch (e) { if (force) throw e; return false; }
 }
-const MONEY_FIELDS = { account: ['opening'], txn: ['amount'], asset: ['value', 'purchasePrice'], debt: ['balance', 'monthly'], budget: ['limit'], goal: ['target', 'saved'], recurring: ['amount'], snapshot: ['value'], employee: ['grossMonthly'], project: ['budget'], projectLine: ['planned', 'contracted'] };
-/** Multiplies every amount in the current workspace by `factor` (permanent conversion). */
-function convertSpace(factor) {
+const MONEY_FIELDS = { asset: ['value', 'purchasePrice'], debt: ['balance', 'monthly'], budget: ['limit'], goal: ['target', 'saved'], recurring: ['amount'], snapshot: ['value'], employee: ['grossMonthly'], project: ['budget'], projectLine: ['planned', 'contracted'] };
+/** Converts the workspace from `oldW` by `factor`. Bank accounts are real-world things: they keep their own
+ *  currency and balances (accounts that were in the workspace currency get it pinned explicitly). Everything
+ *  measured in the workspace currency — payment values, budgets, goals, projects, assets, debts, wages — is converted. */
+function convertSpace(factor, oldW = baseCur(), newW) {
   const r2 = x => Math.round(x * factor * 100) / 100;
+  const inW = a => !a?.currency || a.currency === oldW;
+  const pinned = new Set(db().account.filter(inW).map(a => a.id));
+  for (const t of [...db().txn]) {
+    const c = { ...t }, from = byId(t.accountId);
+    if (inW(from)) c.baseAmount = r2(t.amount);                       // value in the new workspace currency
+    else if (c.baseAmount != null) c.baseAmount = r2(c.baseAmount);
+    if (newW && from?.currency === newW) c.baseAmount = undefined;     // account already in the new currency
+    put('txn', c);
+  }
+  for (const a of [...db().account]) if (pinned.has(a.id)) { S.records[a.id].data.currency = oldW; touch(a.id); }   // keep the EUR account in EUR
   for (const kind of Object.keys(MONEY_FIELDS)) {
     for (const o of [...db()[kind]]) {
       const c = { ...o };
@@ -119,7 +160,7 @@ function convertSpace(factor) {
 async function changeBaseCurrency(to, convert) {
   const from = baseCur();
   if (from === to) return;
-  if (convert) convertSpace((await fetchRate(from, to)).rate);
+  if (convert) convertSpace((await fetchRate(from, to)).rate, from, to);
   S.spaces[S.current].currency = to;
   if (!S.dirtySpaces.includes(S.current)) S.dirtySpaces.push(S.current);
   if (viewPref() === to) localStorage.removeItem('hf.view');
@@ -134,6 +175,13 @@ function money(n, short) {
     fmtCache[k] ??= new Intl.NumberFormat(LOCALE(), { style: 'currency', currency: code, minimumFractionDigits: d, maximumFractionDigits: d });
     return fmtCache[k].format(n * factor);
   } catch { return (n * factor).toFixed(d) + ' ' + code; }
+}
+/** Amount in a specific currency (no display conversion) — e.g. an account's own currency. */
+function moneyIn(n, code, short) {
+  if (!code || code === baseCur()) return money(n, short);
+  const d = short ? 0 : 2, k = LOCALE() + code + d + 'x';
+  try { fmtCache[k] ??= new Intl.NumberFormat(LOCALE(), { style: 'currency', currency: code, minimumFractionDigits: d, maximumFractionDigits: d }); return fmtCache[k].format(n); }
+  catch { return n.toFixed(d) + ' ' + code; }
 }
 const signed = (n, type) => (type === 'expense' ? '−' : type === 'income' ? '+' : '') + money(Math.abs(n));
 const fmtNum = (n, d = 1) => new Intl.NumberFormat(LOCALE(), { maximumFractionDigits: d }).format(n);
@@ -160,6 +208,11 @@ const BUSINESS_CATS = [
   ['Taxes & fees', '🧾', 'expense'], ['Bank fees', '💳', 'expense'], ['Other costs', '📦', 'expense'],
   ['Sales & services', '🔧', 'income'], ['Product sales', '⚙️', 'income'], ['Other revenue', '💰', 'income'],
 ];
+/** Categories for project payments (house build, renovation, garden, pool…) — shown instead of everyday ones. */
+const PROJECT_CATS = [
+  ['Materials', '🧱'], ['Labour & trades', '👷'], ['Equipment rental', '🚜'], ['Design & planning', '📐'], ['Permits & fees', '📄'],
+  ['Transport & disposal', '🚛'], ['Furniture & appliances', '🛋️'], ['Utility connections', '🔌'], ['Other project costs', '📦'],
+];
 const ACCOUNT_TYPES = { bank: ['Bank account', '🏦'], cash: ['Cash', '💵'], savings: ['Savings', '🐷'], card: ['Credit card', '💳'], invest: ['Investment account', '📈'], other: ['Other', '👛'] };
 const ASSET_TYPES = { property: ['Property', '🏠'], vehicle: ['Vehicle', '🚗'], investment: ['Investments', '📈'], valuables: ['Valuables', '💎'], business: ['Business', '🏢'], other: ['Other', '📦'] };
 const DEBT_TYPES = { mortgage: ['Mortgage', '🏠'], car: ['Car loan', '🚗'], loan: ['Personal loan', '💸'], card: ['Credit card debt', '💳'], other: ['Other debt', '📄'] };
@@ -183,9 +236,10 @@ function save() {
 // ---------- data model: payload shapes identical to the iOS DTOs ----------
 const clean = o => { for (const k of Object.keys(o)) if (o[k] === undefined || o[k] === null || (REF_FIELDS.includes(k) && o[k] === '')) delete o[k]; return o; };
 const SHAPES = {
-  account: o => ({ name: o.name || '', type: o.type || 'other', opening: +o.opening || 0, archived: !!o.archived, createdAt: o.createdAt || nowIso() }),
-  category: o => ({ name: o.name || '', icon: o.icon || '🏷️', type: o.type || 'expense', colorHex: o.colorHex || '#64748b', sort: o.sort | 0 }),
-  txn: o => clean({ type: o.type || 'expense', amount: +o.amount || 0, date: o.date || nowIso(), note: o.note || '', accountId: o.accountId, toAccountId: o.toAccountId, categoryId: o.categoryId, goalId: o.goalId, recurringId: o.recurringId, projectId: o.projectId, projectLineId: o.projectLineId, imported: !!o.imported, createdAt: o.createdAt || nowIso() }),
+  account: o => clean({ name: o.name || '', type: o.type || 'other', opening: +o.opening || 0, archived: !!o.archived, createdAt: o.createdAt || nowIso(), currency: o.currency && o.currency !== baseCur() ? o.currency : undefined }),
+  category: o => clean({ name: o.name || '', icon: o.icon || '🏷️', type: o.type || 'expense', colorHex: o.colorHex || '#64748b', sort: o.sort | 0, scope: o.scope === 'project' ? 'project' : undefined }),
+  txn: o => clean({ type: o.type || 'expense', amount: +o.amount || 0, date: o.date || nowIso(), note: o.note || '', accountId: o.accountId, toAccountId: o.toAccountId, categoryId: o.categoryId, goalId: o.goalId, recurringId: o.recurringId, projectId: o.projectId, projectLineId: o.projectLineId, imported: !!o.imported, createdAt: o.createdAt || nowIso(),
+    baseAmount: o.baseAmount == null ? undefined : +o.baseAmount, origAmount: o.origAmount == null ? undefined : +o.origAmount, origCurrency: o.origCurrency || undefined, toAmount: o.toAmount == null ? undefined : +o.toAmount }),
   asset: o => clean({ name: o.name || '', type: o.type || 'other', value: +o.value || 0, valueDate: o.valueDate || nowIso(), purchasePrice: o.purchasePrice == null || o.purchasePrice === '' ? undefined : +o.purchasePrice, purchaseDate: o.purchaseDate || undefined, depreciation: +o.depreciation || 0, note: o.note || '', history: (o.history || []).map(h => ({ date: h.date, value: +h.value })) }),
   debt: o => clean({ name: o.name || '', type: o.type || 'other', balance: +o.balance || 0, rate: +o.rate || 0, monthly: +o.monthly || 0, assetId: o.assetId }),
   budget: o => ({ categoryId: o.categoryId, limit: +o.limit || 0 }),
@@ -246,14 +300,35 @@ const isNamed = (c, en) => c && (c.name === en || c.name === TABLES.sk?.[en] || 
 const catNamed = en => db().category.find(c => isNamed(c, en));
 
 // ---------- calculations (same rules as iOS Ledger) ----------
+// Multi-currency: an account has its own currency (default = workspace currency W). A payment's `amount` is in
+// its account's currency; `baseAmount` = value in W at the payment date's ECB rate; `origAmount/origCurrency` =
+// what was paid at the till if different; `toAmount` = amount received by the target account of a transfer.
+const accCur = a => a?.currency || baseCur();
+/** Balance in the account's own currency. */
 function balance(a) {
   let b = +a.opening || 0;
   for (const t of db().txn) {
     if (t.type === 'expense' && t.accountId === a.id) b -= t.amount;
     else if (t.type === 'income' && t.accountId === a.id) b += t.amount;
-    else if (t.type === 'transfer') { if (t.accountId === a.id) b -= t.amount; if (t.toAccountId === a.id) b += t.amount; }
+    else if (t.type === 'transfer') { if (t.accountId === a.id) b -= t.amount; if (t.toAccountId === a.id) b += t.toAmount ?? t.amount; }
   }
   return b;
+}
+/** Balance in the workspace currency (today's rate). */
+const balanceInBase = a => { const c = accCur(a); return c === baseCur() ? balance(a) : balance(a) * (rateNow(c, baseCur()) ?? 1); };
+/** A payment's value in the workspace currency. */
+function baseOf(t) {
+  const c = accCur(byId(t.accountId));
+  if (c === baseCur()) return t.amount;
+  if (t.baseAmount != null) return t.baseAmount;
+  const r = rateNow(c, baseCur()); return r ? t.amount * r : t.amount;
+}
+/** For payments the app creates itself (recurring, wages, loan payments): amounts given in W, booked to any account. */
+function bookInBase(o, amountW) {
+  const c = accCur(byId(o.accountId));
+  if (c === baseCur()) return { ...o, amount: amountW };
+  const r = rateNow(c, baseCur());
+  return { ...o, amount: r ? Math.round((amountW / r) * 100) / 100 : amountW, baseAmount: amountW };
 }
 function assetValue(a) {
   if (!(+a.depreciation > 0)) return +a.value;
@@ -262,22 +337,22 @@ function assetValue(a) {
 }
 function totals() {
   const d = db();
-  const acc = sum(d.account.filter(a => !a.archived), balance), ast = sum(d.asset, assetValue), debt = sum(d.debt, x => +x.balance);
+  const acc = sum(d.account.filter(a => !a.archived), balanceInBase), ast = sum(d.asset, assetValue), debt = sum(d.debt, x => +x.balance);
   return { acc, ast, debt, net: acc + ast - debt };
 }
 const txIn = mk => db().txn.filter(t => monthKey(t._day) === mk);
-const income = mk => sum(txIn(mk).filter(t => t.type === 'income'), t => t.amount);
-const expenses = mk => sum(txIn(mk).filter(t => t.type === 'expense'), t => t.amount);
-const spent = (catId, mk) => sum(txIn(mk).filter(t => t.type === 'expense' && t.categoryId === catId), t => t.amount);
+const income = mk => sum(txIn(mk).filter(t => t.type === 'income'), baseOf);
+const expenses = mk => sum(txIn(mk).filter(t => t.type === 'expense'), baseOf);
+const spent = (catId, mk) => sum(txIn(mk).filter(t => t.type === 'expense' && t.categoryId === catId), baseOf);
 function breakdown(mk) {
   const m = {};
-  for (const t of txIn(mk)) if (t.type === 'expense') m[t.categoryId || ''] = (m[t.categoryId || ''] || 0) + t.amount;
+  for (const t of txIn(mk)) if (t.type === 'expense') m[t.categoryId || ''] = (m[t.categoryId || ''] || 0) + baseOf(t);
   return Object.entries(m).map(([id, v]) => ({ cat: id ? byId(id) : null, v })).sort((a, b) => b.v - a.v);
 }
 function goalProgress(g) {
-  if (g.kind === 'trip') return sum(db().txn.filter(t => t.goalId === g.id && t.type === 'expense'), t => t.amount);
+  if (g.kind === 'trip') return sum(db().txn.filter(t => t.goalId === g.id && t.type === 'expense'), baseOf);
   const a = byId(g.accountId);
-  return a ? balance(a) : +g.saved || 0;
+  return a ? balanceInBase(a) : +g.saved || 0;
 }
 function payoff(l) {
   const B = +l.balance, r = +l.rate / 100 / 12, P = +l.monthly;
@@ -309,14 +384,14 @@ const projectTx = p => db().txn.filter(t => t.projectId === p.id && t.type === '
 function projectStats(p) {
   const tx = projectTx(p), end = p.completedDate ? Date.parse(p.completedDate) + 864e5 : Infinity;
   const build = tx.filter(t => t._t < end), running = tx.filter(t => t._t >= end);
-  const spent = sum(build, t => t.amount), runningCost = sum(running, t => t.amount);
+  const spent = sum(build, baseOf), runningCost = sum(running, baseOf);
   const lines = projectLines(p).map(l => {
-    const lspent = sum(build.filter(t => t.projectLineId === l.id), t => t.amount);
+    const lspent = sum(build.filter(t => t.projectLineId === l.id), baseOf);
     const base = l.contracted != null ? l.contracted : l.planned;
     return { ...l, spent: lspent, expected: l.status === 'done' ? lspent : Math.max(lspent, base) };
   });
   const lineIds = new Set(lines.map(l => l.id));
-  const unassigned = sum(build.filter(t => !t.projectLineId || !lineIds.has(t.projectLineId)), t => t.amount);
+  const unassigned = sum(build.filter(t => !t.projectLineId || !lineIds.has(t.projectLineId)), baseOf);
   const planned = sum(lines, l => l.planned), contracted = sum(lines.filter(l => l.contracted != null), l => l.contracted);
   const forecast = sum(lines, l => l.expected) + unassigned;
   const contingency = p.budget * (p.contingencyPct || 0) / 100;
@@ -326,9 +401,16 @@ function projectStats(p) {
   let timePct = null;
   if (p.startDate && p.endDate) timePct = clamp((Date.now() - Date.parse(p.startDate)) / (Date.parse(p.endDate) - Date.parse(p.startDate)), 0, 1);
   return { spent, runningCost, lines, unassigned, planned, contracted, forecast, contingency, over: forecast - p.budget, asset, value, invested, ownedMonths,
-    perMonth: ownedMonths ? runningCost / ownedMonths : null, timePct, byCat: build.reduce((m, t) => { m[t.categoryId || ''] = (m[t.categoryId || ''] || 0) + t.amount; return m; }, {}) };
+    perMonth: ownedMonths ? runningCost / ownedMonths : null, timePct, byCat: build.reduce((m, t) => { m[t.categoryId || ''] = (m[t.categoryId || ''] || 0) + baseOf(t); return m; }, {}) };
+}
+/** Adds the project categories to the current workspace once (for older workspaces too). */
+function ensureProjectCategories() {
+  if (db().category.some(c => c.scope === 'project')) return;
+  const n = db().category.length;
+  PROJECT_CATS.forEach(([name, icon], i) => put('category', { name: tr(name), icon, type: 'expense', colorHex: PALETTE[(i + 3) % PALETTE.length], sort: n + i, scope: 'project' }));
 }
 function createProject(o) {
+  ensureProjectCategories();
   const id = put('project', o);
   (PROJECT_TEMPLATES[o.type] || []).forEach(([name, share], i) => put('projectLine', { projectId: id, name: tr(name), planned: Math.round(o.budget * share) / 100, sort: i }));
   return id;
@@ -354,7 +436,8 @@ function nextRecurring(r) {
   return addMonths(d, r.freq === 'quarterly' ? 3 : r.freq === 'yearly' ? 12 : 1);
 }
 function postRecurring(r, day, spaceId = S.current) {
-  put('txn', { type: r.type, amount: r.amount, date: day2iso(day), note: r.name, accountId: r.accountId, categoryId: r.categoryId, recurringId: r.id }, spaceId);
+  const c = accCur(byId(r.accountId)), rt = c === baseCur() ? null : rateNow(c, baseCur());
+  put('txn', { type: r.type, amount: r.amount, baseAmount: rt ? Math.round(r.amount * rt * 100) / 100 : undefined, date: day2iso(day), note: r.name, accountId: r.accountId, categoryId: r.categoryId, recurringId: r.id }, spaceId);
   put('recurring', { ...r, nextDate: day2iso(nextRecurring(r)) }, spaceId);
 }
 /** Adds due "auto" recurring items in every workspace. */
@@ -426,9 +509,10 @@ async function snapshotsBack(net, step, noise, rnd) {
   }
 }
 async function personalDemo() {
+  ensureProjectCategories();
   const C = n => catNamed(n)?.id, rnd = rng(11), r2 = (a, b) => Math.round((a + rnd() * (b - a)) * 100) / 100;
   const t0 = Date.now(), acc = (name, type, opening, i) => put('account', { name: tr(name), type, opening, createdAt: new Date(t0 + i * 1000).toISOString() });
-  const main = acc('Main account', 'bank', 1650, 0), sav = acc('Savings', 'savings', 8200, 1), card = acc('Credit card', 'card', 0, 2), cash = acc('Cash', 'cash', 650, 3);
+  const main = acc('Main account', 'bank', 31920, 0), sav = acc('Savings', 'savings', 8200, 1), card = acc('Credit card', 'card', 0, 2), cash = acc('Cash', 'cash', 650, 3);
   const add = (day, type, amount, cat, accountId, note, extra = {}) => put('txn', { type, amount, date: day2iso(day), note, accountId, categoryId: cat ? C(cat) : undefined, ...extra });
   const shops = ['Lidl', 'Kaufland', 'Billa', 'Tesco'], eats = ['Pizzeria', 'Café', 'Sushi bar', 'Bistro'];
   for (let i = 120; i >= 0; i--) {
@@ -468,9 +552,9 @@ async function personalDemo() {
   const L = n => db().projectLine.find(l => l.projectId === reno && isNamedText(l.name, n));
   const setLine = (n, o) => { const l = L(n); if (l) put('projectLine', { ...l, ...o }); };
   setLine('Demolition & disposal', { status: 'done' }); setLine('Plumbing', { status: 'contracted', contracted: 1250, supplier: 'Inštalatér Kováč' }); setLine('Bathroom', { status: 'contracted', contracted: 2100, supplier: 'Siko' });
-  add(addDays(today(), -35), 'expense', 480, 'Housing', main, tr('Demolition & disposal'), { projectId: reno, projectLineId: L('Demolition & disposal')?.id });
-  add(addDays(today(), -21), 'expense', 600, 'Housing', main, tr('Plumbing') + ' — ' + tr('deposit'), { projectId: reno, projectLineId: L('Plumbing')?.id });
-  add(addDays(today(), -12), 'expense', 1340, 'Shopping', card, 'Siko — ' + tr('tiles'), { projectId: reno, projectLineId: L('Walls & floors')?.id });
+  add(addDays(today(), -35), 'expense', 480, 'Transport & disposal', main, tr('Demolition & disposal'), { projectId: reno, projectLineId: L('Demolition & disposal')?.id });
+  add(addDays(today(), -21), 'expense', 600, 'Labour & trades', main, tr('Plumbing') + ' — ' + tr('deposit'), { projectId: reno, projectLineId: L('Plumbing')?.id });
+  add(addDays(today(), -12), 'expense', 1340, 'Materials', card, 'Siko — ' + tr('tiles'), { projectId: reno, projectLineId: L('Walls & floors')?.id });
   const carProj = put('project', { name: tr('Family car'), icon: '🚗', type: 'car', status: 'done', budget: 31000, contingencyPct: 0, startDate: new Date(2023, 1, 20, 12).toISOString(), completedDate: new Date(2023, 2, 15, 12).toISOString(), assetId: car });
   [['Purchase price', 28900], ['Registration & taxes', 650], ['Insurance (first year)', 720]].forEach(([n, a], i) => {
     const lid = put('projectLine', { projectId: carProj, name: tr(n), planned: a, status: 'done', sort: i });
@@ -483,6 +567,7 @@ async function personalDemo() {
 }
 const isNamedText = (name, en) => name === en || name === TABLES.sk?.[en] || name === TABLES.cs?.[en];
 async function businessDemo() {
+  ensureProjectCategories();
   const C = n => catNamed(n)?.id, rnd = rng(7), r2 = (a, b) => Math.round((a + rnd() * (b - a)) * 100) / 100;
   const bank = put('account', { name: tr('Business account'), type: 'bank', opening: 9800 });
   const till = put('account', { name: tr('Cash register'), type: 'cash', opening: 650, createdAt: new Date(Date.now() + 1000).toISOString() });
@@ -520,7 +605,7 @@ async function businessDemo() {
   const hall = createProject({ name: tr('Second service bay'), icon: '🏭', type: 'business', status: 'planning', budget: 42000, contingencyPct: 10, startDate: day2iso(addMonths(today(), 2)), endDate: day2iso(addMonths(today(), 7)) });
   const hl = db().projectLine.filter(l => l.projectId === hall);
   if (hl[0]) put('projectLine', { ...hl[0], status: 'contracted', contracted: 31500, supplier: 'Stavby Novák s.r.o.' });
-  if (hl[3]) { put('projectLine', { ...hl[3], status: 'done' }); put('txn', { type: 'expense', amount: 1850, date: day2iso(addDays(today(), -15)), note: tr('Building permit'), accountId: bank, categoryId: C('Taxes & fees'), projectId: hall, projectLineId: hl[3].id }); }
+  if (hl[3]) { put('projectLine', { ...hl[3], status: 'done' }); put('txn', { type: 'expense', amount: 1850, date: day2iso(addDays(today(), -15)), note: tr('Building permit'), accountId: bank, categoryId: C('Permits & fees'), projectId: hall, projectLineId: hl[3].id }); }
   await snapshotsBack(totals().net, 1400, 2500, rnd);
 }
 

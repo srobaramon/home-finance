@@ -519,3 +519,15 @@
 "spent of %@ budget": "minuté z rozpočtu %@"
 "deposit": "záloha"
 "tiles": "obklady"
+
+# --- multi-currency & project categories
+"Charged to account (%@)": "Zaúčtované na účet (%@)"
+"Received (%@)": "Prijaté (%@)"
+"Changing the currency of an account with payments keeps the numbers — use it only to fix a wrong currency.": "Zmena meny účtu s platbami ponechá čísla — použite ju len na opravu nesprávnej meny."
+"Materials": "Materiál"
+"Labour & trades": "Práca a remeselníci"
+"Equipment rental": "Požičovňa techniky"
+"Design & planning": "Projekt a plánovanie"
+"Transport & disposal": "Doprava a odvoz"
+"Furniture & appliances": "Nábytok a spotrebiče"
+"Other project costs": "Ostatné náklady projektu"
