@@ -243,3 +243,16 @@ form[data-kind="saving"] .only-trip { display: none; }
 .section-title { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 650; margin: 20px 4px 8px; }
 .preview-table { width: 100%; font-size: 12px; border-collapse: collapse; margin-bottom: 14px; display: block; overflow-x: auto; }
 .preview-table td, .preview-table th { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; }
+
+/* v2 additions */
+.space-btn { color: var(--accent); font-weight: 650; font-size: 15px; display: block; margin-bottom: 2px; }
+.choice { display: flex; gap: 14px; align-items: center; text-align: left; width: 100%; }
+.choice b { display: block; font-size: 17px; }
+.choice small { display: block; margin-top: 2px; }
+.big-ic { font-size: 34px; }
+.item-card { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; }
+.item-card .mid { flex: 1; min-width: 0; }
+.item-card .mid b, .item-card .mid small { display: block; }
+.auth { text-align: left; }
+.auth .seg button { cursor: pointer; }
+.btn[disabled] { opacity: .5; }
