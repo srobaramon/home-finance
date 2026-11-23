@@ -256,3 +256,13 @@ form[data-kind="saving"] .only-trip { display: none; }
 .auth { text-align: left; }
 .auth .seg button { cursor: pointer; }
 .btn[disabled] { opacity: .5; }
+
+/* multi-currency */
+.amount-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; }
+.amount-row select { border: 0; background: var(--card); border-radius: 12px; padding: 10px 12px; font-weight: 650; }
+.fx { background: var(--accent-soft); border-radius: 12px; padding: 10px 12px 2px; margin-bottom: 12px; }
+.item .end small { display: block; color: var(--muted); font-size: 12px; }
+
+/* context categories: project payments show project categories only */
+form[data-scope="project"] .cat[data-type="expense"]:not([data-scope="project"]),
+form:not([data-scope="project"]) .cat[data-scope="project"] { display: none; }
