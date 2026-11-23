@@ -51,7 +51,7 @@ function parseYaml(text) {
 }
 async function loadLanguages() {
   await Promise.all(['sk', 'cs'].map(async l => {
-    try { TABLES[l] = parseYaml(await (await fetch(`i18n/${l}.yml`)).text()); } catch { TABLES[l] = {}; }
+    try { TABLES[l] = parseYaml(await (await fetch(`i18n/${l}.yml`, { cache: 'no-cache' })).text()); } catch { TABLES[l] = {}; }
   }));
 }
 const langSetting = () => localStorage.getItem('hf.lang') || 'system';
@@ -103,7 +103,7 @@ async function refreshViewRate(force) {
   if (!force && r && Date.now() - r.fetched < 12 * 3600e3) return false;
   try { await fetchRate(base, v); return true; } catch (e) { if (force) throw e; return false; }
 }
-const MONEY_FIELDS = { account: ['opening'], txn: ['amount'], asset: ['value', 'purchasePrice'], debt: ['balance', 'monthly'], budget: ['limit'], goal: ['target', 'saved'], recurring: ['amount'], snapshot: ['value'], employee: ['grossMonthly'] };
+const MONEY_FIELDS = { account: ['opening'], txn: ['amount'], asset: ['value', 'purchasePrice'], debt: ['balance', 'monthly'], budget: ['limit'], goal: ['target', 'saved'], recurring: ['amount'], snapshot: ['value'], employee: ['grossMonthly'], project: ['budget'], projectLine: ['planned', 'contracted'] };
 /** Multiplies every amount in the current workspace by `factor` (permanent conversion). */
 function convertSpace(factor) {
   const r2 = x => Math.round(x * factor * 100) / 100;
@@ -164,8 +164,8 @@ const ACCOUNT_TYPES = { bank: ['Bank account', '🏦'], cash: ['Cash', '💵'], 
 const ASSET_TYPES = { property: ['Property', '🏠'], vehicle: ['Vehicle', '🚗'], investment: ['Investments', '📈'], valuables: ['Valuables', '💎'], business: ['Business', '🏢'], other: ['Other', '📦'] };
 const DEBT_TYPES = { mortgage: ['Mortgage', '🏠'], car: ['Car loan', '🚗'], loan: ['Personal loan', '💸'], card: ['Credit card debt', '💳'], other: ['Other debt', '📄'] };
 const FREQ = { weekly: ['Weekly', 52 / 12], monthly: ['Monthly', 1], quarterly: ['Every 3 months', 1 / 3], yearly: ['Yearly', 1 / 12] };
-const KINDS = ['account', 'category', 'txn', 'asset', 'debt', 'budget', 'goal', 'recurring', 'snapshot', 'employee'];
-const REF_FIELDS = ['accountId', 'toAccountId', 'categoryId', 'goalId', 'recurringId', 'assetId'];
+const KINDS = ['account', 'category', 'txn', 'asset', 'debt', 'budget', 'goal', 'recurring', 'snapshot', 'employee', 'project', 'projectLine'];
+const REF_FIELDS = ['accountId', 'toAccountId', 'categoryId', 'goalId', 'recurringId', 'assetId', 'projectId', 'projectLineId'];
 
 // ---------- local store ----------
 function emptyStore() {
@@ -185,7 +185,7 @@ const clean = o => { for (const k of Object.keys(o)) if (o[k] === undefined || o
 const SHAPES = {
   account: o => ({ name: o.name || '', type: o.type || 'other', opening: +o.opening || 0, archived: !!o.archived, createdAt: o.createdAt || nowIso() }),
   category: o => ({ name: o.name || '', icon: o.icon || '🏷️', type: o.type || 'expense', colorHex: o.colorHex || '#64748b', sort: o.sort | 0 }),
-  txn: o => clean({ type: o.type || 'expense', amount: +o.amount || 0, date: o.date || nowIso(), note: o.note || '', accountId: o.accountId, toAccountId: o.toAccountId, categoryId: o.categoryId, goalId: o.goalId, recurringId: o.recurringId, imported: !!o.imported, createdAt: o.createdAt || nowIso() }),
+  txn: o => clean({ type: o.type || 'expense', amount: +o.amount || 0, date: o.date || nowIso(), note: o.note || '', accountId: o.accountId, toAccountId: o.toAccountId, categoryId: o.categoryId, goalId: o.goalId, recurringId: o.recurringId, projectId: o.projectId, projectLineId: o.projectLineId, imported: !!o.imported, createdAt: o.createdAt || nowIso() }),
   asset: o => clean({ name: o.name || '', type: o.type || 'other', value: +o.value || 0, valueDate: o.valueDate || nowIso(), purchasePrice: o.purchasePrice == null || o.purchasePrice === '' ? undefined : +o.purchasePrice, purchaseDate: o.purchaseDate || undefined, depreciation: +o.depreciation || 0, note: o.note || '', history: (o.history || []).map(h => ({ date: h.date, value: +h.value })) }),
   debt: o => clean({ name: o.name || '', type: o.type || 'other', balance: +o.balance || 0, rate: +o.rate || 0, monthly: +o.monthly || 0, assetId: o.assetId }),
   budget: o => ({ categoryId: o.categoryId, limit: +o.limit || 0 }),
@@ -193,6 +193,10 @@ const SHAPES = {
   recurring: o => clean({ name: o.name || '', type: o.type || 'expense', amount: +o.amount || 0, categoryId: o.categoryId, accountId: o.accountId, freq: o.freq || 'monthly', nextDate: o.nextDate || nowIso(), auto: !!o.auto }),
   snapshot: o => ({ month: o.month, value: +o.value || 0 }),
   employee: o => ({ name: o.name || '', role: o.role || '', grossMonthly: +o.grossMonthly || 0, employerPct: o.employerPct == null ? 36.2 : +o.employerPct, contractor: !!o.contractor, active: o.active !== false, startDate: o.startDate || nowIso() }),
+  project: o => clean({ name: o.name || '', icon: o.icon || '🏗️', type: o.type || 'other', status: o.status || 'planning', budget: +o.budget || 0, contingencyPct: o.contingencyPct == null || o.contingencyPct === '' ? 10 : +o.contingencyPct,
+    startDate: o.startDate || undefined, endDate: o.endDate || undefined, completedDate: o.completedDate || undefined, assetId: o.assetId, note: o.note || '', createdAt: o.createdAt || nowIso() }),
+  projectLine: o => clean({ projectId: o.projectId, name: o.name || '', planned: +o.planned || 0, contracted: o.contracted == null || o.contracted === '' ? undefined : +o.contracted,
+    supplier: o.supplier || '', dueDate: o.dueDate || undefined, status: o.status || 'planned', sort: o.sort | 0 }),
 };
 function normalize(data) {
   const o = { ...data };
@@ -215,6 +219,8 @@ function db() {
   c.category.sort((a, b) => a.sort - b.sort);
   c.txn.sort((a, b) => b._t - a._t || b._created - a._created);
   c.employee.sort((a, b) => a.name.localeCompare(b.name));
+  c.projectLine.sort((a, b) => a.sort - b.sort);
+  c.project.sort((a, b) => (a.status === 'done') - (b.status === 'done') || Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
   c.byId = {};
   for (const k of KINDS) for (const o of c[k]) c.byId[o.id] = o;
   return (CACHE = c);
@@ -282,6 +288,61 @@ function payoff(l) {
 }
 const employerCost = e => (e.contractor ? 0 : e.grossMonthly * e.employerPct / 100);
 const totalCost = e => e.grossMonthly + employerCost(e);
+
+// ---------- projects (house build, renovation, garden, pool, car …) ----------
+const PROJECT_TYPES = { house: ['House build', '🏡'], renovation: ['Renovation', '🛠️'], garden: ['Garden', '🌳'], pool: ['Pool', '🏊'], car: ['Car purchase', '🚗'], business: ['Business investment', '🏭'], other: ['Other project', '📋'] };
+const PROJECT_STATUS = { planning: 'Planning', active: 'In progress', done: 'Finished' };
+const LINE_STATUS = { planned: 'Planned', contracted: 'Contracted', done: 'Done' };
+/** Typical budget split per project type: [line name, share of budget %]. */
+const PROJECT_TEMPLATES = {
+  house: [['Land & permits', 8], ['Design & architect', 5], ['Foundations', 10], ['Walls & structure', 15], ['Roof', 9], ['Windows & doors', 7], ['Installations (water, power, heating)', 12], ['Interior finishing', 13], ['Kitchen & bathrooms', 8], ['Exterior & landscaping', 5], ['Utility connections', 3]],
+  renovation: [['Demolition & disposal', 6], ['Electrical', 12], ['Plumbing', 12], ['Walls & floors', 22], ['Kitchen', 20], ['Bathroom', 18], ['Painting', 4], ['Furniture', 6]],
+  garden: [['Design', 5], ['Earthworks', 15], ['Paving & terraces', 30], ['Planting & lawn', 20], ['Irrigation', 10], ['Fencing', 12], ['Lighting', 8]],
+  pool: [['Permits', 3], ['Excavation', 12], ['Pool shell', 40], ['Filtration & technology', 20], ['Heating', 10], ['Surroundings', 10], ['Cover', 5]],
+  car: [['Purchase price', 92], ['Registration & taxes', 2], ['Insurance (first year)', 3], ['Tyres & accessories', 3]],
+  business: [['Purchase / construction', 70], ['Installation', 10], ['Training', 5], ['Permits & fees', 5], ['Other costs', 10]],
+  other: [],
+};
+const projectLines = p => db().projectLine.filter(l => l.projectId === p.id);
+const projectTx = p => db().txn.filter(t => t.projectId === p.id && t.type === 'expense');
+/** Build costs = up to the finished date; running costs = after it (ownership). */
+function projectStats(p) {
+  const tx = projectTx(p), end = p.completedDate ? Date.parse(p.completedDate) + 864e5 : Infinity;
+  const build = tx.filter(t => t._t < end), running = tx.filter(t => t._t >= end);
+  const spent = sum(build, t => t.amount), runningCost = sum(running, t => t.amount);
+  const lines = projectLines(p).map(l => {
+    const lspent = sum(build.filter(t => t.projectLineId === l.id), t => t.amount);
+    const base = l.contracted != null ? l.contracted : l.planned;
+    return { ...l, spent: lspent, expected: l.status === 'done' ? lspent : Math.max(lspent, base) };
+  });
+  const lineIds = new Set(lines.map(l => l.id));
+  const unassigned = sum(build.filter(t => !t.projectLineId || !lineIds.has(t.projectLineId)), t => t.amount);
+  const planned = sum(lines, l => l.planned), contracted = sum(lines.filter(l => l.contracted != null), l => l.contracted);
+  const forecast = sum(lines, l => l.expected) + unassigned;
+  const contingency = p.budget * (p.contingencyPct || 0) / 100;
+  const asset = byId(p.assetId), value = asset ? assetValue(asset) : null;
+  const invested = spent + runningCost;
+  const ownedSince = p.completedDate || null, ownedMonths = ownedSince ? Math.max(1, (Date.now() - Date.parse(ownedSince)) / (30.44 * 864e5)) : null;
+  let timePct = null;
+  if (p.startDate && p.endDate) timePct = clamp((Date.now() - Date.parse(p.startDate)) / (Date.parse(p.endDate) - Date.parse(p.startDate)), 0, 1);
+  return { spent, runningCost, lines, unassigned, planned, contracted, forecast, contingency, over: forecast - p.budget, asset, value, invested, ownedMonths,
+    perMonth: ownedMonths ? runningCost / ownedMonths : null, timePct, byCat: build.reduce((m, t) => { m[t.categoryId || ''] = (m[t.categoryId || ''] || 0) + t.amount; return m; }, {}) };
+}
+function createProject(o) {
+  const id = put('project', o);
+  (PROJECT_TEMPLATES[o.type] || []).forEach(([name, share], i) => put('projectLine', { projectId: id, name: tr(name), planned: Math.round(o.budget * share) / 100, sort: i }));
+  return id;
+}
+/** Finish a project: set the date and put the result into assets (creates or updates the linked asset). */
+function finishProject(p, value) {
+  const st = projectStats(p), v = value ?? Math.round(st.spent);
+  const assetType = { house: 'property', renovation: 'property', garden: 'property', pool: 'property', car: 'vehicle', business: 'business' }[p.type] || 'other';
+  let assetId = p.assetId;
+  if (assetId && byId(assetId)) { const a = byId(assetId); put('asset', { ...a, value: v, valueDate: nowIso(), history: [...(a.history || []), { date: nowIso(), value: v }] }); }
+  else assetId = put('asset', { name: p.name, type: assetType, value: v, purchasePrice: Math.round(st.spent), purchaseDate: nowIso(), depreciation: assetType === 'vehicle' ? 15 : 0, history: [{ date: nowIso(), value: v }] });
+  put('project', { ...byId(p.id), status: 'done', completedDate: nowIso(), assetId });
+  return assetId;
+}
 function guessCategory(note, type) {
   const n = (note || '').trim().toLowerCase();
   if (!n) return null;
@@ -402,8 +463,25 @@ async function personalDemo() {
   put('goal', { kind: 'saving', icon: '🚙', name: tr('Next car'), target: 12000, saved: 3200, deadline: day2iso(`${y + 2}-06-30`) });
   add(addDays(today(), -20), 'expense', 420, 'Travel', main, tr('Apartment deposit'), { goalId: trip });
   add(addDays(today(), -9), 'expense', 186, 'Travel', card, tr('Ferry tickets'), { goalId: trip });
+  // projects: a bathroom renovation in progress and the family car as a finished project with running costs
+  const reno = createProject({ name: tr('Bathroom renovation'), icon: '🛁', type: 'renovation', status: 'active', budget: 9000, contingencyPct: 10, startDate: day2iso(addDays(today(), -40)), endDate: day2iso(addDays(today(), 50)) });
+  const L = n => db().projectLine.find(l => l.projectId === reno && isNamedText(l.name, n));
+  const setLine = (n, o) => { const l = L(n); if (l) put('projectLine', { ...l, ...o }); };
+  setLine('Demolition & disposal', { status: 'done' }); setLine('Plumbing', { status: 'contracted', contracted: 1250, supplier: 'Inštalatér Kováč' }); setLine('Bathroom', { status: 'contracted', contracted: 2100, supplier: 'Siko' });
+  add(addDays(today(), -35), 'expense', 480, 'Housing', main, tr('Demolition & disposal'), { projectId: reno, projectLineId: L('Demolition & disposal')?.id });
+  add(addDays(today(), -21), 'expense', 600, 'Housing', main, tr('Plumbing') + ' — ' + tr('deposit'), { projectId: reno, projectLineId: L('Plumbing')?.id });
+  add(addDays(today(), -12), 'expense', 1340, 'Shopping', card, 'Siko — ' + tr('tiles'), { projectId: reno, projectLineId: L('Walls & floors')?.id });
+  const carProj = put('project', { name: tr('Family car'), icon: '🚗', type: 'car', status: 'done', budget: 31000, contingencyPct: 0, startDate: new Date(2023, 1, 20, 12).toISOString(), completedDate: new Date(2023, 2, 15, 12).toISOString(), assetId: car });
+  [['Purchase price', 28900], ['Registration & taxes', 650], ['Insurance (first year)', 720]].forEach(([n, a], i) => {
+    const lid = put('projectLine', { projectId: carProj, name: tr(n), planned: a, status: 'done', sort: i });
+    put('txn', { type: 'expense', amount: a, date: new Date(2023, 2, 10 + i, 12).toISOString(), note: tr(n), accountId: main, categoryId: C('Car & fuel'), projectId: carProj, projectLineId: lid });
+  });
+  for (const t of db().txn.filter(t => isNamed(catOf(t.categoryId), 'Car & fuel') && !t.projectId)) put('txn', { ...t, projectId: carProj });
+  put('txn', { type: 'expense', amount: 410, date: day2iso(addMonths(today(), -8)), note: tr('Annual service'), accountId: main, categoryId: C('Car & fuel'), projectId: carProj });
+  put('txn', { type: 'expense', amount: 720, date: day2iso(addMonths(today(), -6)), note: tr('Car insurance'), accountId: main, categoryId: C('Insurance'), projectId: carProj });
   await snapshotsBack(totals().net, 900, 1500, rnd);
 }
+const isNamedText = (name, en) => name === en || name === TABLES.sk?.[en] || name === TABLES.cs?.[en];
 async function businessDemo() {
   const C = n => catNamed(n)?.id, rnd = rng(7), r2 = (a, b) => Math.round((a + rnd() * (b - a)) * 100) / 100;
   const bank = put('account', { name: tr('Business account'), type: 'bank', opening: 9800 });
@@ -439,6 +517,10 @@ async function businessDemo() {
   put('recurring', { name: tr('Liability insurance'), type: 'expense', amount: 890, categoryId: C('Insurance'), accountId: bank, freq: 'yearly', nextDate: day2iso(addDays(today(), 12)) });
   [['Materials & parts', 3500], ['Vehicles & fuel', 300], ['Marketing', 150]].forEach(([n, limit]) => put('budget', { categoryId: C(n), limit }));
   put('goal', { kind: 'saving', icon: '🛠️', name: tr('New tyre machine'), target: 8500, saved: 2400, deadline: day2iso(addMonths(today(), 10)) });
+  const hall = createProject({ name: tr('Second service bay'), icon: '🏭', type: 'business', status: 'planning', budget: 42000, contingencyPct: 10, startDate: day2iso(addMonths(today(), 2)), endDate: day2iso(addMonths(today(), 7)) });
+  const hl = db().projectLine.filter(l => l.projectId === hall);
+  if (hl[0]) put('projectLine', { ...hl[0], status: 'contracted', contracted: 31500, supplier: 'Stavby Novák s.r.o.' });
+  if (hl[3]) { put('projectLine', { ...hl[3], status: 'done' }); put('txn', { type: 'expense', amount: 1850, date: day2iso(addDays(today(), -15)), note: tr('Building permit'), accountId: bank, categoryId: C('Taxes & fees'), projectId: hall, projectLineId: hl[3].id }); }
   await snapshotsBack(totals().net, 1400, 2500, rnd);
 }
 

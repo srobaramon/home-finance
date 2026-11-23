@@ -2,7 +2,7 @@
 /* Home Finance — web UI. Same screens and rules as the iOS app; data/sync lives in core.js. */
 
 let tab = 'home';
-const ui = { month: monthKey(today()), q: '', acct: '', plansSeg: 'budgets', authMode: 'signin', authMsg: '' };
+const ui = { month: monthKey(today()), q: '', acct: '', plansSeg: 'projects', authMode: 'signin', authMsg: '' };
 
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -103,6 +103,18 @@ function rateLine() {
   return `<p class="hint">💱 ${esc(rateText(i))} · <button type="button" class="link" data-act="refreshRate">${tr('Refresh rate')}</button><br>${esc(tr('Enter amounts in %@', i.base))}</p>`;
 }
 
+function projectRow(p) {
+  const st = projectStats(p), pct = p.budget ? st.spent / p.budget : 0, overF = st.forecast > p.budget + 0.5;
+  const status = `<span class="pill ${p.status === 'done' ? 'pos' : p.status === 'active' ? 'warn' : ''}">${tr(PROJECT_STATUS[p.status] || 'Planning')}</span>`;
+  const sub = p.status === 'done'
+    ? (st.value != null ? tr('Value %@ · invested %@', money(st.value, 1), money(st.invested, 1)) : tr('Build cost %@', money(st.spent, 1)))
+    : tr('Forecast %@', money(st.forecast, 1)) + (overF ? ` · <span class="neg">${esc(tr('%@ over budget', money(st.over, 1)))}</span>` : '');
+  return `<button class="prow" data-act="openProject" data-id="${p.id}">
+    <div class="l"><b>${p.icon} ${esc(p.name)} ${status}</b><span class="num">${money(st.spent, 1)} <small>/ ${money(p.budget, 1)}</small></span></div>
+    <div class="prog" style="--c:${overF ? 'var(--neg)' : pct > 0.85 ? 'var(--warn)' : '#8b5cf6'}"><i style="width:${clamp(pct * 100, 0, 100)}%"></i></div>
+    <small>${p.status === 'done' ? esc(sub) : sub}</small></button>`;
+}
+
 // ---------- views ----------
 const V = {};
 
@@ -181,6 +193,7 @@ V.home = () => {
   </section>
   ${biz ? `<button class="card item-card" data-act="team"><span class="ic" style="--c:#f97316">👷</span><span class="mid"><b>${tr('Team & wages')}</b><small>${team.length ? esc(tr('%@ people · incl. employer levies', team.length)) : tr('Add employees and contractors to see what your team costs.')}</small></span><b class="num">${esc(tr('%@/mo', money(teamCost, 1)))}</b></button>` : ''}
   ${soon.length ? `<section class="card flush"><div class="row-h"><h2>${tr('Upcoming bills')}</h2><button class="link" data-act="plans" data-id="recurring">→</button></div><div class="list">${soon.map(recRow).join('')}</div></section>` : ''}
+  ${d.project.filter(p => p.status !== 'done').length ? `<section class="card flush"><div class="row-h"><h2>${tr('Projects')}</h2><button class="link" data-act="plans" data-id="projects">→</button></div>${d.project.filter(p => p.status !== 'done').slice(0, 3).map(projectRow).join('')}</section>` : ''}
   ${d.budget.length ? `<section class="card flush"><div class="row-h"><h2>${tr('Budgets')}</h2><button class="link" data-act="plans" data-id="budgets">→</button></div>${d.budget.slice(0, 4).map(budgetRow).join('')}</section>` : ''}
   ${d.goal.length ? `<section class="card flush"><div class="row-h"><h2>${tr('Goals & trips')}</h2><button class="link" data-act="plans" data-id="goals">→</button></div>${d.goal.slice(0, 4).map(goalRow).join('')}</section>` : ''}
   <section class="card"><div class="row-h"><h2>${tr('Cash flow')}</h2><small>${tr('last 6 months')}</small></div>${bars(cf)}
@@ -232,7 +245,12 @@ V.assets = () => {
 V.plans = () => {
   const seg = ui.plansSeg, d = db(), mk = monthKey(today());
   let body = '';
-  if (seg === 'budgets') {
+  if (seg === 'projects') {
+    const active = d.project.filter(p => p.status !== 'done'), done = d.project.filter(p => p.status === 'done');
+    body = d.project.length ? `${active.length ? `<div class="section-title">${tr('Active & planned')}</div><section class="card flush">${active.map(projectRow).join('')}</section>` : ''}
+      ${done.length ? `<div class="section-title">${tr('Finished — owned')}</div><section class="card flush">${done.map(projectRow).join('')}</section>` : ''}`
+      : `<section class="card"><div class="empty"><div class="e">🏗️</div><b>${tr('No projects yet')}</b><br>${tr('Plan a house build, renovation, garden, pool or a car purchase — budget by parts, track every payment and see the forecast.')}<button class="btn ghost" data-act="newProject">${tr('New project')}</button></div></section>`;
+  } else if (seg === 'budgets') {
     const total = sum(d.budget, b => b.limit), s = sum(d.budget, b => spent(b.categoryId, mk));
     body = d.budget.length ? `<section class="card"><div class="row-h"><h2>${monthName(mk)}</h2></div>
         <div class="split3">${stat(tr('Budgeted'), money(total, 1))}${stat(tr('Spent'), money(s, 1), s > total ? 'neg' : '')}${stat(tr('Left'), money(total - s, 1))}</div>
@@ -251,7 +269,7 @@ V.plans = () => {
       : `<section class="card"><div class="empty"><div class="e">🔁</div><b>${tr('Nothing recurring')}</b><br>${tr('Add bills, subscriptions, rent or salary that repeat.')}<button class="btn ghost" data-act="newRec">${tr('Add recurring')}</button></div></section>`;
   }
   return `<header class="top"><h1>${tr('Plans')}</h1></header>
-    <div class="seg">${[['budgets', 'Budgets'], ['goals', 'Goals & trips'], ['recurring', 'Recurring']].map(([k, l]) => `<button class="${seg === k ? 'on' : ''}" data-act="plans" data-id="${k}">${tr(l)}</button>`).join('')}</div>${body}`;
+    <div class="seg">${[['projects', 'Projects'], ['budgets', 'Budgets'], ['goals', 'Goals & trips'], ['recurring', 'Recurring']].map(([k, l]) => `<button class="${seg === k ? 'on' : ''}" data-act="plans" data-id="${k}">${tr(l)}</button>`).join('')}</div>${body}`;
 };
 
 function syncLine() {
@@ -364,6 +382,7 @@ function txForm(id, preset = {}) {
     <div class="cats not-transfer">${d.category.map(c => `<label class="cat" data-type="${c.type}"><input type="radio" name="categoryId" value="${c.id}"${t.categoryId === c.id ? ' checked' : ''}><span style="--c:${c.colorHex}"><i>${c.icon}</i>${esc(c.name)}</span></label>`).join('')}</div>
     ${field(tr('Note (e.g. Lidl, dinner)'), `<input name="note" value="${esc(t.note || '')}">`)}
     ${trips.length ? `<div class="only-expense">${field(tr('Part of trip / event'), `<select name="goalId">${opt('', '—', t.goalId)}${trips.map(g => opt(g.id, `${g.icon} ${g.name}`, t.goalId)).join('')}</select>`)}</div>` : ''}
+    ${d.project.length ? `<div class="only-expense grid2">${field(tr('Project'), `<select name="projectId">${opt('', '—', t.projectId)}${d.project.map(p => opt(p.id, `${p.icon} ${p.name}`, t.projectId)).join('')}</select>`)}${field(tr('Budget line'), `<select name="projectLineId"></select>`)}</div>` : ''}
     ${id ? `<button type="button" class="danger" data-act="delTx" data-id="${id}">${tr('Delete transaction')}</button>` : ''}`, {
     onMount: f => {
       const sync = () => {
@@ -371,7 +390,9 @@ function txForm(id, preset = {}) {
         const sel = f.querySelector('input[name=categoryId]:checked');
         if (sel && sel.closest('.cat').dataset.type !== type) sel.checked = false;
       };
-      f.addEventListener('change', e => { if (e.target.name === 'type') sync(); }); sync();
+      const lines = () => { const sel = f.elements.namedItem('projectLineId'); if (!sel) return; const pid = f.elements.namedItem('projectId').value;
+        sel.innerHTML = opt('', '—', t.projectLineId) + (pid ? db().projectLine.filter(l => l.projectId === pid).map(l => opt(l.id, l.name, t.projectLineId)).join('') : ''); sel.disabled = !pid; };
+      f.addEventListener('change', e => { if (e.target.name === 'type') sync(); if (e.target.name === 'projectId') lines(); }); sync(); lines();
       if (!id) setTimeout(() => f.amount.focus(), 300);
     },
     onSubmit: v => {
@@ -381,7 +402,8 @@ function txForm(id, preset = {}) {
       let categoryId = v.type === 'transfer' ? undefined : v.categoryId || guessCategory(v.note, v.type) || catNamed(v.type === 'income' ? 'Other income' : 'Other')?.id || catNamed(v.type === 'income' ? 'Other revenue' : 'Other costs')?.id;
       const keepTime = id && dayOf(t.date) === v.date;
       put('txn', { ...t, id: id || undefined, type: v.type, amount, accountId: v.accountId, date: keepTime ? t.date : day2iso(v.date || today()), note: (v.note || '').trim(), categoryId,
-        toAccountId: v.type === 'transfer' ? v.toAccountId : undefined, goalId: v.type === 'expense' ? v.goalId || undefined : undefined });
+        toAccountId: v.type === 'transfer' ? v.toAccountId : undefined, goalId: v.type === 'expense' ? v.goalId || undefined : undefined,
+        projectId: v.type === 'expense' ? v.projectId || undefined : undefined, projectLineId: v.type === 'expense' && v.projectId ? v.projectLineId || undefined : undefined });
       localStorage.setItem('hf.lastAccount', v.accountId);
       if (!id) toast('✓ ' + tr('Done'));
     },
@@ -539,6 +561,78 @@ function catForm(id) {
     <div class="swatches">${PALETTE.map(p => `<label><input type="radio" name="colorHex" value="${p}"${p === c.colorHex ? ' checked' : ''}><span style="--c:${p}"></span></label>`).join('')}</div>
     ${id ? `<button type="button" class="danger" data-act="delCat" data-id="${id}">${tr('Delete category')}</button>` : ''}`, {
     onSubmit: v => { if (!v.name?.trim()) return false; put('category', { ...c, type: v.type, icon: v.icon || '🏷️', name: v.name.trim(), colorHex: v.colorHex || c.colorHex }); setTimeout(categoriesSheet, 320); },
+  });
+}
+
+// ---------- projects ----------
+function projectSheet(id) {
+  const p = byId(id); if (!p) return;
+  const st = projectStats(p), done = p.status === 'done';
+  const bar = (v, max, color) => `<div class="prog" style="--c:${color}"><i style="width:${clamp(max ? (v / max) * 100 : 0, 0, 100)}%"></i></div>`;
+  const lineRows = st.lines.map(l => {
+    const base = l.contracted != null ? l.contracted : l.planned, over = l.expected > l.planned + 0.5;
+    return `<button type="button" class="prow" data-act="editLine" data-id="${l.id}">
+      <div class="l"><b>${esc(l.name)} <span class="pill ${l.status === 'done' ? 'pos' : l.status === 'contracted' ? 'warn' : ''}">${tr(LINE_STATUS[l.status] || 'Planned')}</span></b><span class="num">${money(l.spent, 1)} <small>/ ${money(base, 1)}</small></span></div>
+      ${bar(l.spent, base || l.planned, over ? 'var(--neg)' : l.status === 'done' ? 'var(--pos)' : '#8b5cf6')}
+      <small>${esc([tr('Planned %@', money(l.planned, 1)), l.contracted != null ? tr('Contracted %@', money(l.contracted, 1)) : null, l.supplier || null, l.dueDate ? tr('Due %@', fmtDate(dayOf(l.dueDate))) : null].filter(Boolean).join(' · '))}</small></button>`;
+  }).join('');
+  const tx = projectTx(p);
+  const own = done || st.runningCost > 0 ? `<div class="section-title">${tr('Ownership')}</div><div class="card"><div class="split3">
+      ${stat(tr('Build cost'), money(st.spent, 1))}${stat(tr('Running costs'), money(st.runningCost, 1))}${stat(tr('Total invested'), money(st.invested, 1), 'neg')}</div>
+      ${st.value != null ? `<div class="split3" style="margin-top:8px">${stat(tr('Value today'), money(st.value, 1))}${stat(tr('Value − invested'), money(st.value - st.invested, 1), st.value - st.invested < 0 ? 'neg' : 'pos')}${stat(tr('Cost per month'), st.perMonth != null ? money(st.perMonth, 1) : '–')}</div>` : ''}
+      <p class="hint" style="margin:10px 0 0">${tr('Tag fuel, service, insurance or maintenance to this project to see what it really costs over the years.')}</p></div>` : '';
+  openSheet(`${p.icon} ${p.name}`, `
+    <div class="stat-big"><small>${tr(PROJECT_TYPES[p.type]?.[0] || 'Other project')} · ${tr(PROJECT_STATUS[p.status] || 'Planning')}</small><div class="v">${money(st.spent)}</div><small>${esc(tr('spent of %@ budget', money(p.budget)))}</small></div>
+    <div class="card"><div class="split3">${stat(tr('Contracted'), money(st.contracted, 1))}${stat(tr('Forecast'), money(st.forecast, 1), st.over > 0.5 ? 'neg' : '')}${stat(st.over > 0.5 ? tr('Over budget') : tr('Left in budget'), money(Math.abs(st.over), 1), st.over > 0.5 ? 'neg' : 'pos')}</div>
+      ${bar(st.spent, p.budget, st.over > 0.5 ? 'var(--neg)' : '#8b5cf6')}
+      <p class="hint" style="margin:8px 0 0">${esc(tr('Contingency reserve %@ (%@ %%)', money(st.contingency, 1), fmtNum(p.contingencyPct || 0)))}${st.timePct != null ? ' · ' + esc(tr('Time used %@ %%', Math.round(st.timePct * 100))) + (p.endDate ? ' · ' + esc(tr('Target %@', fmtDate(dayOf(p.endDate), { day: 'numeric', month: 'short', year: 'numeric' }))) : '') : ''}</p></div>
+    <div class="grid2"><button type="button" class="btn" data-act="projectExpense" data-id="${p.id}">＋ ${tr('Add expense')}</button><button type="button" class="btn ghost" data-act="newLine" data-id="${p.id}">＋ ${tr('Budget line')}</button></div>
+    <div class="section-title">${tr('Budget lines')}</div>
+    <div class="card flush">${lineRows || `<div class="empty">${tr('Split the budget into parts — e.g. foundations, roof, kitchen.')}</div>`}
+      ${st.unassigned ? `<div class="prow"><div class="l"><b>${tr('Not assigned to a line')}</b><span class="num">${money(st.unassigned, 1)}</span></div></div>` : ''}</div>
+    ${tx.length ? `<div class="section-title">${tr('Spending by category')}</div><div class="card">${catBreakdown(Object.entries(st.byCat).map(([c, v]) => ({ cat: c ? byId(c) : null, v })).sort((a, b) => b.v - a.v), st.spent, '')}</div>` : ''}
+    ${own}
+    ${tx.length ? `<div class="section-title">${tr('Payments')} (${tx.length})</div><div class="card flush">${tx.slice(0, 30).map(txRow).join('')}</div>` : ''}
+    ${!done ? `<button type="button" class="btn ghost" data-act="finishProject" data-id="${p.id}">🏁 ${tr('Finish project → add to assets')}</button>` : ''}
+    <button type="button" class="btn ghost" data-act="editProject" data-id="${p.id}">✎ ${tr('Edit project')}</button>`);
+}
+function projectForm(id) {
+  const p = id ? byId(id) : { type: 'house', status: 'planning', contingencyPct: 10, icon: '🏡' };
+  openSheet(id ? tr('Edit project') : tr('New project'), `
+    ${field(tr('Type'), `<select name="type"${id ? '' : ' data-tpl="1"'}>${Object.entries(PROJECT_TYPES).map(([k, [l, i]]) => opt(k, `${i} ${tr(l)}`, p.type)).join('')}</select>`)}
+    ${!id ? `<p class="hint">${tr('The budget is split into typical parts for this type — you can change them later.')}</p>` : ''}
+    <div class="grid2" style="grid-template-columns:72px 1fr">${field('&nbsp;', `<input name="icon" value="${esc(p.icon || '')}" maxlength="4" style="text-align:center;font-size:22px">`)}${field(tr('Name'), `<input name="name" value="${esc(p.name || '')}" placeholder="${esc(tr('e.g. Family house in Žilina'))}">`)}</div>
+    <div class="grid2">${field(tr('Total budget'), moneyInput('budget', p.budget))}${field(tr('Contingency %'), moneyInput('contingencyPct', p.contingencyPct, '10'))}</div>
+    <div class="grid2">${field(tr('Start'), dateInput('startDate', p.startDate))}${field(tr('Target end'), dateInput('endDate', p.endDate))}</div>
+    ${field(tr('Status'), `<select name="status">${Object.entries(PROJECT_STATUS).map(([k, l]) => opt(k, tr(l), p.status)).join('')}</select>`)}
+    ${field(tr('Linked asset'), `<select name="assetId">${opt('', '—', p.assetId)}${db().asset.map(a => opt(a.id, a.name, p.assetId)).join('')}</select>`)}
+    ${field(tr('Note'), `<input name="note" value="${esc(p.note || '')}">`)}
+    ${id ? `<button type="button" class="danger" data-act="delProject" data-id="${id}">${tr('Delete project')}</button>` : ''}`, {
+    onMount: f => { f.type.addEventListener('change', () => { if (!id) f.icon.value = PROJECT_TYPES[f.type.value][1]; }); },
+    onSubmit: v => {
+      if (!v.name?.trim() || !num(v.budget)) { toast(tr('Name') + ' · ' + tr('Total budget')); return false; }
+      const o = { ...p, type: v.type, icon: v.icon || PROJECT_TYPES[v.type][1], name: v.name.trim(), budget: num(v.budget), contingencyPct: num(v.contingencyPct),
+        startDate: v.startDate ? day2iso(v.startDate) : undefined, endDate: v.endDate ? day2iso(v.endDate) : undefined, status: v.status, assetId: v.assetId || undefined, note: v.note };
+      if (v.status === 'done' && !o.completedDate) o.completedDate = nowIso();
+      if (v.status !== 'done') o.completedDate = undefined;
+      const pid = id ? put('project', o) : createProject(o);
+      ui.plansSeg = 'projects'; setTimeout(() => projectSheet(pid), 320);
+    },
+  });
+}
+function lineForm(projectId, id) {
+  const l = id ? byId(id) : { projectId, status: 'planned', sort: db().projectLine.filter(x => x.projectId === projectId).length };
+  openSheet(id ? l.name : tr('Budget line'), `
+    ${field(tr('Name'), `<input name="name" value="${esc(l.name || '')}" placeholder="${esc(tr('e.g. Roof'))}">`)}
+    <div class="grid2">${field(tr('Planned'), moneyInput('planned', l.planned))}${field(tr('Contracted (quote)'), moneyInput('contracted', l.contracted, tr('optional')))}</div>
+    <div class="grid2">${field(tr('Supplier'), `<input name="supplier" value="${esc(l.supplier || '')}">`)}${field(tr('Due'), dateInput('dueDate', l.dueDate))}</div>
+    ${field(tr('Status'), `<select name="status">${Object.entries(LINE_STATUS).map(([k, s]) => opt(k, tr(s), l.status)).join('')}</select>`)}
+    ${id ? `<button type="button" class="danger" data-act="delLine" data-id="${id}">${tr('Delete')}</button>` : ''}`, {
+    onSubmit: v => {
+      if (!v.name?.trim()) return false;
+      put('projectLine', { ...l, name: v.name.trim(), planned: num(v.planned), contracted: v.contracted === '' ? undefined : num(v.contracted), supplier: v.supplier, dueDate: v.dueDate ? day2iso(v.dueDate) : undefined, status: v.status });
+      setTimeout(() => projectSheet(l.projectId), 320);
+    },
   });
 }
 
@@ -724,7 +818,7 @@ const A = {
   month: d => { ui.month = monthKey(addMonths(ui.month + '-01', +d)); render(); },
   fab: () => {
     if (tab === 'assets') return openSheet(tr('Add'), `<button type="button" class="btn" data-act="newAsset">${tr('Asset (house, car…)')}</button><button type="button" class="btn ghost" data-act="newDebt">${tr('Debt (mortgage, loan…)')}</button>`);
-    if (tab === 'plans') return ({ budgets: () => budgetForm(), goals: () => goalForm(), recurring: () => recForm() })[ui.plansSeg]();
+    if (tab === 'plans') return ({ projects: () => projectForm(), budgets: () => budgetForm(), goals: () => goalForm(), recurring: () => recForm() })[ui.plansSeg]();
     txForm();
   },
   closeSheet,
@@ -753,6 +847,17 @@ const A = {
     if (n && n.trim()) { S.spaces[id].name = n.trim(); if (!S.dirtySpaces.includes(id)) S.dirtySpaces.push(id); save(); scheduleSync(); spacesSheet(); render(); }
   },
   eraseSpace: () => { if (confirm(tr('Erase “%@” and everything in it? This can\'t be undone.', space().name))) { deleteSpace(S.current); render(); } },
+  openProject: id => projectSheet(id), newProject: () => projectForm(), editProject: id => projectForm(id),
+  projectExpense: id => txForm(null, { projectId: id }),
+  newLine: pid => lineForm(pid), editLine: id => lineForm(byId(id).projectId, id),
+  delLine: id => { const pid = byId(id).projectId; confirmDel(tr('Delete') + '?', () => { db().txn.filter(t => t.projectLineId === id).forEach(t => put('txn', { ...t, projectLineId: undefined })); remove(id); }); setTimeout(() => projectSheet(pid), 320); },
+  delProject: id => confirmDel(tr('Delete project') + '?', () => { db().txn.filter(t => t.projectId === id).forEach(t => put('txn', { ...t, projectId: undefined, projectLineId: undefined })); projectLines({ id }).forEach(l => remove(l.id)); remove(id); }),
+  finishProject: id => {
+    const p = byId(id), st = projectStats(p);
+    const v = prompt(tr('Value of the result today (goes to Assets):'), Math.round(st.spent));
+    if (v === null) return;
+    finishProject(p, num(v) || Math.round(st.spent)); toast('🏁 ' + tr('Added to assets')); closeSheet(); render(); setTimeout(() => projectSheet(id), 320);
+  },
   team: teamSheet, newEmp: () => empForm(), editEmp: id => empForm(id), payWages,
   delEmp: id => confirmDel(tr('Delete') + '?', () => remove(id)),
   editTx: id => txForm(id),
